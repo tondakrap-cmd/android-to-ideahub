@@ -1,0 +1,32 @@
+TABULE LINK 0.4.1 — KONTROLY
+=============================
+
+Datum: 20. 11. 2026
+Balíček: cz.ideamirror.app, versionCode 7, versionName 0.4.1
+Sestavení: úspěšné, Java / Android SDK 35, minimální API 26, cílové API 35.
+Podpis instalačního balíčku: ověřen (APK Signature Scheme v2 a v3),
+zachován stejný podpisový certifikát jako u všech předchozích verzí:
+SHA-256 certifikátu: d118189c3f6cd48a915458246a4971bdbd3140a74b0bfef900088d2eea9329d3
+Zarovnání balíčku: ověřeno nástrojem zipalign.
+Inspekce manifestu (aapt2 dump badging): ověřen versionCode 7,
+versionName 0.4.1.
+
+Automatické testy (.\Test.ps1):
+PASS — 202 kontrol:
+- vše z předchozích verzí (194 kontrol),
+- nově AudioUtil: ořezání 0–100 %, kvadratická perceptuální křivka
+  (0 % = ticho, 50 % = -12 dB, 100 % = 0 dB) a přesné škálování
+  signed 16-bit little-endian PCM vzorků bez zkreslení.
+
+Omezení ověření:
+Verze 0.4.0 byla uživatelem ověřena na fyzickém Samsung tabletu a
+Huawei IdeaHub Pro 65. Verze 0.4.1 nebyla dosud spuštěna na fyzických
+zařízeních (na PC není adb ani emulátor); pro režim 1920p (1920×1200)
+a regulaci hlasitosti aktualizujte obě zařízení.
+
+Kontrolní součty SHA-256:
+Tabule-Link-0.4.1.apk  14121cd5a41394431d23a60d4fa00df87ba95fa810de78460fb22dade562d9a8
+Tabule-Link-0.4.0.apk  e1998f5bb6fa11bb699838c7f020a3346007642880ec618d17d4f66b70d27e00
+Tabule-Link-0.3.1.apk  8ec4ccccb4d4c2edd040a38d5910d633992d3affef6971d9838be71e44d12705
+Tabule-Link-0.2.1.apk  5568470428f4acf3490fce7fe83677d05c2b049e9ff1231908220fcaa6d58ffe
+Tabule-Link-0.1.0.apk  61e0ab36eb8d0e65dfa773f646bc579f120a847387d7fb9a552ed63509c79763

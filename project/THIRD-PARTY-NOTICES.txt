@@ -1,0 +1,10 @@
+ZXing Core 3.5.3
+https://github.com/zxing/zxing
+https://repo.maven.apache.org/maven2/com/google/zxing/core/3.5.3/
+
+Copyright ZXing authors. Licensed under the Apache License, Version 2.0.
+The unmodified core JAR is included in libs/ and in the APK.
+The Apache 2.0 license is included in APACHE-2.0.txt.
+
+Android, Samsung Galaxy and Huawei IdeaHub/IdeaShare are marks of their
+respective owners. This independent application is not endorsed by them.
