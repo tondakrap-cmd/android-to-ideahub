@@ -7,7 +7,9 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.media.projection.*;
+import android.net.Uri;
 import android.os.*;
+import android.provider.Settings;
 import android.text.InputType;
 import android.view.*;
 import android.widget.*;
@@ -29,10 +31,10 @@ public class MainActivity extends Activity {
     private int audioVolume = 70;
     private int lastNonZeroVolume = 70;
 
-    private TextView status, statusPill, networkView, savedInfo, volumeLabel;
+    private TextView status, statusPill, networkView, savedInfo, volumeLabel, alwaysOnStatus;
     private LinearLayout savedBox;
-    private Button quickConnectBtn, qualityBtn, muteBtn;
-    private Switch audioSwitch;
+    private Button quickConnectBtn, qualityBtn, muteBtn, overlayPermBtn;
+    private Switch audioSwitch, alwaysOnSwitch, autoOpenBootSwitch;
     private SeekBar volumeSeek;
     private int tickCount = 0;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -44,11 +46,16 @@ public class MainActivity extends Activity {
                 statusPill.setText("● Vysílám živě");
                 statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.CARD_HI, Ui.ACCENT, 999));
                 statusPill.setTextColor(Ui.ACCENT);
+            } else if (ReceiverService.running) {
+                statusPill.setText("● Trvalý příjem");
+                statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.CARD_HI, Ui.CARD_HI_STROKE, 999));
+                statusPill.setTextColor(Ui.ACCENT);
             } else {
                 statusPill.setText("● Připraveno");
                 statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.PANEL, Ui.CARD_STROKE, 999));
                 statusPill.setTextColor(Ui.MUTED);
             }
+            refreshAlwaysOnUi();
             if (tickCount % 5 == 0) refreshNetworkInfo();
             tickCount++;
             main.postDelayed(this, 1000);
@@ -109,14 +116,56 @@ public class MainActivity extends Activity {
         grid.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
         root.addView(grid, Ui.vSpace(this, 0, 14));
 
-        // LEFT CARD: Receiver (Tabule) + Network info
+        // LEFT CARD: Receiver (Tabule) + Always-On / Boot mode + Network info
         LinearLayout boardCard = Ui.card(this, false);
         boardCard.addView(Ui.section(this, "1 · NA TABULI (PŘIJÍMAČ)"));
-        TextView boardTitle = Ui.text(this, "Zobrazit obraz z tabletu", 19);
+        TextView boardTitle = Ui.text(this, "Zobrazit obraz z tabletu / notebooku", 19);
         boardTitle.setTypeface(null, Typeface.BOLD);
         boardCard.addView(boardTitle);
-        boardCard.addView(Ui.muted(this, "Otevře obrazovku příjmu s QR kódem a stálým klíčem, takže se spárovaný tablet připojí jedním klepnutím.", 14));
-        boardCard.addView(Ui.button(this, "Přijímat obraz a zvuk", () -> startActivity(new Intent(this, ReceiveActivity.class))), Ui.vSpace(this, 10, 14));
+        boardCard.addView(Ui.muted(this, "Podporuje více spárovaných uživatelů — další prezentující může kdykoli převzít obrazovku jedním kliknutím.", 14));
+        boardCard.addView(Ui.button(this, "Přijímat obraz a zvuk", () -> startActivity(new Intent(this, ReceiveActivity.class))), Ui.vSpace(this, 10, 12));
+
+        // Always-on receiver & start-on-boot box (ideal for IdeaHub board)
+        LinearLayout alwaysBox = Ui.subpanel(this);
+        alwaysBox.addView(Ui.section(this, "TRVALÝ PŘÍJEM A SPUŠTĚNÍ PO STARTU TABULE"));
+
+        LinearLayout aoRow = new LinearLayout(this);
+        aoRow.setOrientation(LinearLayout.HORIZONTAL);
+        aoRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout aoLabels = Ui.column(this);
+        TextView aoTitle = Ui.text(this, "Trvalý příjem na pozadí (i po startu)", 14);
+        aoTitle.setPadding(0, 0, 0, 0);
+        aoLabels.addView(aoTitle);
+        TextView aoSub = Ui.muted(this, "Tabule stále naslouchá a při připojení sama otevře obraz.", 12);
+        aoSub.setPadding(0, 0, 0, 0);
+        aoLabels.addView(aoSub);
+        aoRow.addView(aoLabels, new LinearLayout.LayoutParams(0, -2, 1f));
+        alwaysOnSwitch = new Switch(this);
+        alwaysOnSwitch.setChecked(ReceiverService.isAlwaysOnEnabled(this));
+        alwaysOnSwitch.setOnCheckedChangeListener((btn, checked) -> onAlwaysOnToggled(checked));
+        aoRow.addView(alwaysOnSwitch);
+        alwaysBox.addView(aoRow, Ui.vSpace(this, 0, 6));
+
+        LinearLayout bootRow = new LinearLayout(this);
+        bootRow.setOrientation(LinearLayout.HORIZONTAL);
+        bootRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView bootTitle = Ui.muted(this, "Po startu tabule rovnou otevřít obrazovku QR/PIN", 13);
+        bootTitle.setPadding(0, 0, 0, 0);
+        bootRow.addView(bootTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+        autoOpenBootSwitch = new Switch(this);
+        autoOpenBootSwitch.setChecked(ReceiverService.isAutoOpenOnBootEnabled(this));
+        autoOpenBootSwitch.setEnabled(alwaysOnSwitch.isChecked());
+        autoOpenBootSwitch.setOnCheckedChangeListener((btn, checked) -> ReceiverService.setAutoOpenOnBootEnabled(this, checked));
+        bootRow.addView(autoOpenBootSwitch);
+        alwaysBox.addView(bootRow, Ui.vSpace(this, 0, 6));
+
+        alwaysOnStatus = Ui.muted(this, "", 12);
+        alwaysBox.addView(alwaysOnStatus);
+
+        overlayPermBtn = Ui.secondaryButton(this, "Povolit vyskočení obrazu přes jiné aplikace", this::openOverlaySettings);
+        overlayPermBtn.setTextSize(13);
+        alwaysBox.addView(overlayPermBtn, Ui.vSpace(this, 4, 0));
+        boardCard.addView(alwaysBox, Ui.vSpace(this, 0, 12));
 
         LinearLayout netBox = Ui.subpanel(this);
         netBox.addView(Ui.section(this, "SÍŤ TOHOTO ZAŘÍZENÍ (KLEPNUTÍM OBNOVIT)"));
@@ -268,6 +317,7 @@ public class MainActivity extends Activity {
         windowActions.addView(Ui.secondaryButton(this, "Uklidit do pozadí", () -> moveTaskToBack(true)), act2);
         windowActions.addView(Ui.secondaryButton(this, "Ukončit aplikaci", () -> {
             stopService(new Intent(this, ShareService.class));
+            stopService(new Intent(this, ReceiverService.class));
             ShareService.status = "Vysílání ukončeno.";
             finishAndRemoveTask();
         }), act3);
@@ -299,7 +349,54 @@ public class MainActivity extends Activity {
         root.addView(footer);
 
         refreshSavedUi();
+        refreshAlwaysOnUi();
         refreshNetworkInfo();
+        if (ReceiverService.isAlwaysOnEnabled(this) && !ReceiverService.running) {
+            try {
+                startForegroundService(new Intent(this, ReceiverService.class).setAction(ReceiverService.ACTION_START_ALWAYS_ON));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void onAlwaysOnToggled(boolean enabled) {
+        ReceiverService.setAlwaysOnEnabled(this, enabled);
+        autoOpenBootSwitch.setEnabled(enabled);
+        if (enabled) {
+            try {
+                startForegroundService(new Intent(this, ReceiverService.class).setAction(ReceiverService.ACTION_START_ALWAYS_ON));
+            } catch (Exception e) {
+                Ui.error(this, Ui.problem(e));
+            }
+        } else {
+            stopService(new Intent(this, ReceiverService.class));
+        }
+        refreshAlwaysOnUi();
+    }
+
+    private void openOverlaySettings() {
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception e) {
+            Ui.error(this, "Otevřete v nastavení tabule oprávnění „Zobrazovat přes jiné aplikace“ pro Tabule Link.");
+        }
+    }
+
+    private void refreshAlwaysOnUi() {
+        boolean enabled = ReceiverService.isAlwaysOnEnabled(this);
+        boolean active = ReceiverService.running;
+        if (enabled && active) {
+            alwaysOnStatus.setTextColor(Ui.ACCENT);
+            alwaysOnStatus.setText("● Aktivní na pozadí — tabule je připravena přijmout sdílení kdykoli.");
+        } else if (enabled) {
+            alwaysOnStatus.setTextColor(Ui.MUTED);
+            alwaysOnStatus.setText("Spouštím službu trvalého příjmu…");
+        } else {
+            alwaysOnStatus.setTextColor(Ui.MUTED);
+            alwaysOnStatus.setText("Vypnuto (doporučeno nechat vypnuté na tabletu).");
+        }
+        boolean needsOverlay = enabled && Build.VERSION.SDK_INT >= 29 && !Settings.canDrawOverlays(this);
+        overlayPermBtn.setVisibility(needsOverlay ? View.VISIBLE : View.GONE);
     }
 
     private void showLicenses() {

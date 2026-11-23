@@ -11,7 +11,7 @@ import android.view.*;
 import android.widget.*;
 
 final class Ui {
-    static final String VERSION = "0.4.1";
+    static final String VERSION = "0.6.0";
 
     static final int BG = Color.rgb(11, 19, 32);
     static final int BG_BOTTOM = Color.rgb(18, 31, 49);

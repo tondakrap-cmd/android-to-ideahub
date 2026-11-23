@@ -1,0 +1,48 @@
+TABULE LINK 0.6.0 — KONTROLY (ANDROID + WINDOWS)
+=================================================
+
+Datum: 23. 11. 2026
+Android balíček: cz.ideamirror.app, versionCode 9, versionName 0.6.0
+Windows aplikace: TabuleLink-Windows-0.6.0.exe (C# / .NET Framework 4.8, x64)
+
+Novinky v 0.6.0 (včetně Windows verze a LAN PINu z 0.5.0)
+1. Střídání více klientů / převzetí sdílení (styl USB tlačítka):
+   - Více tabletů i Windows notebooků může mít uložené stejné spojení k tabuli.
+   - ReceiverService udržuje stálou accept smyčku i během běžící prezentace.
+   - Nový ověřený klient (platný 128bitový klíč nebo 6místný PIN) po úspěšné
+     autentizaci čistě odpojí dosavadního prezentujícího a okamžitě převezme
+     obrazovku i zvuk tabule (bez probliknutí QR kódu).
+   - Neověřený pokus nebo špatný PIN běžící prezentaci nikdy nepřeruší.
+2. Trvalý příjem na pozadí a automatické spuštění po startu tabule:
+   - Přepínač „Trvalý příjem na pozadí (i po startu)“ na tabuli spustí
+     foreground službu ReceiverService (foregroundServiceType=specialUse)
+     a BootReceiver po zapnutí Huawei IdeaHubu.
+   - Jakmile se kdokoli připojí, tabule automaticky vyskočí na celou
+     obrazovku se sdíleným obrazem (tlačítko pro povolení SYSTEM_ALERT_WINDOW
+     + fullScreenIntent záloha).
+   - Volitelný přepínač „Po startu tabule rovnou otevřít obrazovku QR/PIN“.
+3. Windows vysílač (TabuleLink-Windows-0.6.0.exe):
+   - Nativní Windows 10/11 aplikace (64 KB, .NET Framework 4.8), vyžaduje
+     ffmpeg.exe v PATH nebo vedle .exe.
+   - Automatické nalezení tabule v LAN + 6místný PIN, 1-klik uložené připojení,
+     ruční kód tabulelink://…, výběr monitoru, 4 režimy kvality (960p–1920p),
+     GPU ddagrab + fallback gdigrab, systémový zvuk WASAPI Loopback, živá
+     regulace hlasitosti a minimalizace do lišty (tray).
+
+Ověření na PC
+- Android testy (.\Test.ps1): PASS — 210 kontrol.
+- Android sestavení (.\Build.ps1): úspěšné, podpis v2/v3 stejným klíčem
+  (SHA-256 certifikátu: d118189c3f6cd48a915458246a4971bdbd3140a74b0bfef900088d2eea9329d3),
+  zipalign a aapt2 dump badging ověřeny.
+- Windows testy (.\Test-Windows.ps1): PASS — 95 kontrol (včetně reálného
+  parsování ffmpeg libx264 Annex-B a ffmpeg AAC ADTS).
+- Windows sestavení (.\Build-Windows.ps1): úspěšné, 0 varování.
+
+Omezení ověření:
+Živý přenos Windows → Huawei IdeaHub Pro 65, převzetí sdílení mezi dvěma
+klienty a start po zapnutí tabule (BOOT_COMPLETED / vyskočení z pozadí)
+je třeba ověřit přímo na zařízeních.
+
+Kontrolní součty SHA-256:
+Tabule-Link-0.6.0.apk           3eff9a1adaf3722307ebfaebe19f70a6ea61e984b28b289b8b4f3fcfcac40f3e
+TabuleLink-Windows-0.6.0.exe    0f09f08270233998e6a2a5bc9f4d05bd216903b40c86d313de181913288de13b

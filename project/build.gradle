@@ -6,8 +6,8 @@ android {
         applicationId 'cz.ideamirror.app'
         minSdk 26
         targetSdk 35
-        versionCode 7
-        versionName '0.4.1'
+        versionCode 9
+        versionName '0.6.0'
     }
     sourceSets { main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['src']; res.srcDirs = ['res']; assets.srcDirs = ['assets'] } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }

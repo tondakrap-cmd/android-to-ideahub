@@ -16,7 +16,7 @@ import javax.net.ssl.*;
 import javax.security.auth.x500.X500Principal;
 
 final class Wire {
-    static final int MAGIC = 0x54424c31, MAX_FRAME = Packet.MAX_SIZE;
+    static final int MAGIC = 0x54424c31, MAGIC_PIN_OK = 0x54424c32, MAX_FRAME = Packet.MAX_SIZE;
     static final int DEFAULT_PORT = 42521;
     static final String ALIAS = "tabule-link-tls-v2";
     static final SecureRandom RANDOM = new SecureRandom();
@@ -252,10 +252,74 @@ final class Wire {
         return fresh;
     }
 
+    static String loadOrCreateServerPin(Context context, boolean forceNew) {
+        String fresh = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
+        if (context == null) return fresh;
+        SharedPreferences prefs = context.getSharedPreferences("tabule_server", Context.MODE_PRIVATE);
+        String existing = prefs.getString("pin", null);
+        if (!forceNew && existing != null && existing.matches("[0-9]{6}")) {
+            return existing;
+        }
+        prefs.edit().putString("pin", fresh).apply();
+        return fresh;
+    }
+
+    static final class DiscoveryResponder implements Closeable {
+        private final DatagramSocket udp;
+        private final Thread thread;
+        private final Context appContext;
+        private volatile boolean active = true;
+        private volatile String advertisedIp = "";
+
+        DiscoveryResponder(Context context, String deviceName, int tcpPort, String fp, String initialIp) throws Exception {
+            this.appContext = context == null ? null : context.getApplicationContext();
+            this.advertisedIp = initialIp == null ? "" : initialIp;
+            DatagramSocket s = new DatagramSocket(null);
+            s.setReuseAddress(true);
+            s.bind(new InetSocketAddress(DiscoveryProtocol.DISCOVERY_PORT));
+            s.setSoTimeout(1500);
+            this.udp = s;
+            this.thread = new Thread(() -> {
+                byte[] buf = new byte[256];
+                while (active) {
+                    try {
+                        DatagramPacket req = new DatagramPacket(buf, buf.length);
+                        udp.receive(req);
+                        String text = new String(req.getData(), req.getOffset(), req.getLength(), java.nio.charset.StandardCharsets.UTF_8).trim();
+                        if (DiscoveryProtocol.REQUEST.equals(text)) {
+                            String ip = advertisedIp;
+                            if ((ip == null || ip.isEmpty()) && appContext != null) {
+                                List<Endpoint> eps = endpoints(appContext);
+                                if (!eps.isEmpty()) ip = eps.get(0).ip;
+                            }
+                            byte[] reply = DiscoveryProtocol.buildOffer(deviceName, tcpPort, fp, ip)
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                            DatagramPacket resp = new DatagramPacket(reply, reply.length, req.getSocketAddress());
+                            udp.send(resp);
+                        }
+                    } catch (SocketTimeoutException ignored) {
+                    } catch (Exception e) {
+                        if (!active) break;
+                    }
+                }
+            }, "tabule-discovery");
+            this.thread.start();
+        }
+
+        void setAdvertisedIp(String ip) { this.advertisedIp = ip == null ? "" : ip; }
+
+        @Override public void close() {
+            active = false;
+            try { udp.close(); } catch (Exception ignored) {}
+            thread.interrupt();
+        }
+    }
+
     static final class Server implements Closeable {
         final SSLServerSocket socket;
         final String fp;
         final String secret;
+        final String pin;
         final String keySource;
 
         Server(Context context, boolean forceNewSecret) throws Exception {
@@ -263,6 +327,7 @@ final class Wire {
             fp = id.fp;
             keySource = id.source;
             secret = loadOrCreateServerSecret(context, forceNewSecret);
+            pin = loadOrCreateServerPin(context, forceNewSecret);
             X509ExtendedKeyManager km = TlsSupport.serverKeyManager(ALIAS, id.cert, id.key);
             SSLContext ctx = SSLContext.getInstance("TLS");
             ctx.init(new KeyManager[]{km}, null, RANDOM);

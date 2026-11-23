@@ -1,45 +1,41 @@
 # Tabule Link
 
-Lehká Android aplikace pro **šifrované zrcadlení obrazovky a zvuku** z Android tabletu (např. Samsung Galaxy Tab) na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť — bez cloudu, bez služeb Google a bez proprietárního IdeaShare.
+Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tabletu** i z **Windows 10/11 notebooku** na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť — bez cloudu, bez služeb Google a bez proprietárního IdeaShare / USB donglu.
 
-Stejný instalační soubor (`.apk`) slouží jako **vysílač** (na tabletu) i **přijímač** (na tabuli).
+## Hlavní funkce (v0.6.0)
 
-## Hlavní funkce (v0.4.1)
-
-- **Nízkolatenční přenos obrazu (H.264 / MediaCodec)**
-  - 4 volitelné režimy kvality:
-    - `Rychlá odezva` — 960p · 3 Mb/s · 30 fps
-    - `Vyvážený` *(výchozí)* — 1280p · 5 Mb/s · 30 fps
-    - `Vysoká ostrost` — 1600p · 8 Mb/s · 30 fps
-    - `Ultra ostrost` — 1920p · 12 Mb/s · 30 fps (1920 × 1200 na 16:10 tabletu)
-  - Ochrana proti zahlcení na 120Hz tabletech (`KEY_MAX_FPS_TO_ENCODER`), nízkolatenční fronta s adaptivním bitrate (`FrameQueue`), přeskakování zastaralých snímků na přijímači (*drain-to-latest*) a podpora nízkolatenčních příznaků dekodéru (včetně Huawei HiSilicon).
-- **Přenos interního zvuku aplikací (Android 10+)**
-  - Zachytávání zvuku aplikací přes `AudioPlaybackCaptureConfiguration` (YouTube, videa, prezentace — bez snímání mikrofonu), kódování **AAC-LC 48 kHz stereo (128 kb/s)** a přehrávání přes nízkolatenční `AudioTrack`.
-  - **Nezávislá regulace hlasitosti** na tabletu (v reálném čase i během přehrávání, s tlačítkem *Ztlumit*) i na tabuli — nemění systémovou hlasitost tabule nastavenou pro videokonference.
-- **Zabezpečené spojení a rychlé obnovení bez QR kódu**
-  - Přímé šifrované **TLS 1.2** spojení v LAN s ověřením SHA-256 otisku certifikátu tabule a 128bitovým přístupovým klíčem.
-  - První spárování načtením QR kódu (nebo vložením ručního kódu). Tabule používá výchozí stálý port `42521` a trvalý klíč (lze kdykoli obnovit tlačítkem *Nový klíč*), takže příště se tablet připojí jedním klepnutím bez skenování QR kódu.
-- **Přehled síťových rozhraní a diagnostika**
-  - Zobrazení všech IPv4 rozhraní s maskou podsítě (`/24`) na tabletu i na tabuli s prioritizací aktivní Wi-Fi/Ethernet sítě před hotspotem/Wi-Fi Direct.
-  - Rychlé ovládání okna (*Uklidit do pozadí* bez přerušení vysílání, *Ukončit aplikaci*) a vestavěná diagnostika pro ladění.
+- **Android vysílač & přijímač (`releases/Tabule-Link-0.6.0.apk`)**
+  - Stejné APK slouží na tabuli jako přijímač i na tabletu jako vysílač.
+  - **Více klientů a okamžité převzetí sdílení (styl USB tlačítka):** více tabletů i Windows notebooků může mít uložené připojení k jedné tabuli; kliknutím na *Připojit* další prezentující čistě odpojí předchozího a okamžitě převezme obrazovku i zvuk (až po platném TLS + klíč/PIN ověření).
+  - **Trvalý příjem na pozadí a start po zapnutí tabule:** volitelný režim trvalého příjmu (`ReceiverService` + `BootReceiver`) — tabule naslouchá nepřetržitě i po restartu a při připojení prezentujícího automaticky zobrazí obraz na celou obrazovku (volitelně otevře obrazovku QR/PIN rovnou po startu).
+  - 4 režimy kvality obrazu (H.264 nízkolatenční profil, 30 fps): `960p · 3 Mb/s`, `1280p · 5 Mb/s`, `1600p · 8 Mb/s`, `1920p · 12 Mb/s`.
+  - Přenos interního zvuku aplikací (AAC-LC 48 kHz stereo, Android 10+) s živou regulací hlasitosti na tabletu i na tabuli (nemění systémovou hlasitost videokonference tabule).
+  - Přímé **TLS 1.2** spojení s ověřením SHA-256 otisku certifikátu, stálý port `42521`, uložené spojení bez opakovaného skenování QR kódu, **LAN vyhledávání + 6místný PIN** pro snadné spárování Windows notebooku.
+- **Windows vysílač (`releases/TabuleLink-Windows-0.6.0.exe`)**
+  - Nativní Windows 10/11 aplikace (.NET Framework 4.8, bez instalace Pythonu) ve stejném tmavém designu.
+  - Automaticky najde tabuli v LAN → první spárování 6místným PINem (nebo ruční vložení `tabulelink://…`) → další připojení i převzetí tabule jedním kliknutím.
+  - Výběr monitoru, 4 režimy kvality (`960p`–`1920p`), rychlé GPU zachytávání plochy (`ddagrab` přes `ffmpeg` s automatickým fallbackem na `gdigrab`).
+  - Nativní zachytávání systémového zvuku Windows (**WASAPI Loopback**, bez nutnosti Stereo Mixu) + živý posuvník hlasitosti a ztlumení + minimalizace do oznamovací oblasti (tray).
 
 ## Rychlé použití
 
-1. Nainstalujte [releases/Tabule-Link-0.4.1.apk](releases/Tabule-Link-0.4.1.apk) na tabuli i na tablet (Android 8.0 / API 26 a novější; přenos zvuku vyžaduje na tabletu Android 10+).
-2. Připojte obě zařízení ke stejné místní síti (Wi-Fi nebo Ethernet v témže segmentu).
-3. Na tabuli otevřete **Tabule Link → Přijímat obraz a zvuk**. Zkontrolujte zobrazenou IP adresu (případně přepněte síťové rozhraní).
-4. Na tabletu otevřete **Tabule Link → Načíst QR kód**, načtěte QR kód z tabule a potvrďte sdílení celé obrazovky.
-5. Při dalším připojení už na tabletu stačí klepnout na uloženou kartu **⚡ Připojit**.
+### Android (tabule i tablet)
+1. Nainstalujte [releases/Tabule-Link-0.6.0.apk](releases/Tabule-Link-0.6.0.apk) na tabuli Huawei IdeaHub Pro 65 (a případně aktualizujte tablet).
+2. Na tabuli otevřete **Tabule Link** — na levé kartě můžete rovnou zapnout **Trvalý příjem na pozadí (i po startu)** a volitelně **Po startu rovnou otevřít obrazovku QR/PIN**, nebo klepnout na **Přijímat obraz a zvuk**.
+
+### Windows notebook → tabule
+1. Ujistěte se, že na notebooku je dostupný `ffmpeg.exe` (buď v `PATH` přes `winget install Gyan.FFmpeg`, nebo položený do stejné složky vedle `TabuleLink-Windows-0.6.0.exe`).
+2. Spusťte [releases/TabuleLink-Windows-0.6.0.exe](releases/TabuleLink-Windows-0.6.0.exe).
+3. Aplikace sama najde tabuli v síti — zadejte **6místný PIN** zobrazený na tabuli a klikněte na **Spárovat a vysílat**.
+4. Příště už stačí jediné kliknutí na **⚡ Připojit** (včetně převzetí obrazovky od jiného prezentujícího).
 
 ## Struktura projektu
 
-- `project/` — zdrojový kód Android aplikace (čistá Java + Android framework, bez AndroidX; jediná externí knihovna je přibalený `ZXing Core 3.5.3`).
-  - `src/cz/ideamirror/app/` — implementace aplikace (`MainActivity`, `ReceiveActivity`, `ScanActivity`, `ShareService`, `AudioPlayer`, `Wire`, `TlsSupport`, `Packet`, `FrameQueue`, `NetUtil`, `PairCode`, `AudioUtil`, `Ui`).
-  - `tests/cz/ideamirror/app/CoreTest.java` — přenosné automatické testy (202 kontrol: párování, TLS 1.2 handshake v paměti, framing, `FrameQueue`, IPv4 podsítě, `AudioUtil`, QR roundtrip).
-  - `build.py`, `test.py` — sestavení a testy bez Gradlu pomocí JDK 17 a Android SDK Build-Tools.
-  - `build.gradle`, `settings.gradle` — konfigurace pro otevření v Android Studiu.
-- `Build.ps1`, `Test.ps1` — PowerShell spouštěče pro Windows (při použití lokální složky `toolchain/`).
-- `releases/` — aktuální sestavené testovací APK (`Tabule-Link-0.4.1.apk`) a přehled kontrol.
+- `project/` — Android aplikace (čistá Java + Android framework, ZXing Core 3.5.3) + 210 přenosných testů (`Test.ps1`).
+- `windows/` — Windows vysílač (C# / .NET Framework 4.8 WinForms, WASAPI Loopback, H.264 Annex-B & AAC ADTS parser) + 95 automatických testů (`Test-Windows.ps1`).
+- `Build.ps1`, `Test.ps1` — sestavení a testy Android APK.
+- `Build-Windows.ps1`, `Test-Windows.ps1` — sestavení a testy Windows `.exe` pomocí vestavěného `csc.exe`.
+- `releases/` — aktuální vydání (`Tabule-Link-0.6.0.apk`, `TabuleLink-Windows-0.6.0.exe`, záznam kontrol).
 
 ## Sestavení a testy
 

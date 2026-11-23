@@ -601,9 +601,13 @@ public class ShareService extends Service {
         } catch (Exception e) {
             if (running) {
                 diagError = Ui.problem(e);
-                String hint = pair != null ? Wire.subnetMismatchHint(this, pair.host) : null;
-                status = "Přenos se nezdařil (" + diagPhase + "): " + diagError
-                    + (hint != null ? "\n" + hint : "\nZkontrolujte stejnou síť, otevřený příjem na tabuli a načtěte nový QR kód.");
+                if ("vysílání".equals(diagPhase) && diagFrames > 0 && (e instanceof IOException)) {
+                    status = "Vysílání ukončeno (tabule příjem zavřela nebo sdílení převzal jiný uživatel).";
+                } else {
+                    String hint = pair != null ? Wire.subnetMismatchHint(this, pair.host) : null;
+                    status = "Přenos se nezdařil (" + diagPhase + "): " + diagError
+                        + (hint != null ? "\n" + hint : "\nZkontrolujte stejnou síť, otevřený příjem na tabuli a načtěte nový QR kód.");
+                }
             }
         } finally {
             running = false;

@@ -1,38 +1,39 @@
-TABULE LINK 0.4.1 — ULTRA OSTROST (1920p) A REGULACE HLASITOSTI
-===============================================================
+TABULE LINK 0.6.0 — WINDOWS KLIENT, PŘEVZETÍ SDÍLENÍ A TRVALÝ PŘÍJEM
+====================================================================
 
 Účel
-Zrcadlení obrazovky a zvuku Android tabletu na jiné Android zařízení,
-zejména Samsung tablet → Huawei IdeaHub Pro 65. Stejný instalační
-soubor se používá na obou zařízeních. Nevyžaduje cloud ani IdeaShare.
+Zrcadlení obrazovky a zvuku Android tabletu i Windows 10/11 notebooku
+na Huawei IdeaHub Pro 65 (a další Android displeje) přes místní síť.
+Nevyžaduje cloud, služby Google ani proprietární IdeaShare.
 
 Stav
-Verze 0.4.0 byla uživatelem ověřena na fyzickém Samsung tabletu a
-Huawei IdeaHub Pro 65 (obraz, zvuk, uložené rychlé připojení bez QR
-kódu i nový design). Verze 0.4.1 přidává 4. režim rozlišení (Ultra
-ostrost 1920p · 12 Mb/s) a nezávislou regulaci hlasitosti zvuku na
-tabletu i na tabuli. APK 0.4.1 je podepsáno stejným klíčem jako
-předchozí verze (přímá aktualizace) a prošlo 202 automatickými testy.
+Verze 0.6.0 rozšiřuje ověřenou verzi 0.4.0/0.4.1 o Windows vysílač
+(TabuleLink-Windows-0.6.0.exe), LAN vyhledávání + 6místný PIN pro
+notebooky, střídání více spárovaných klientů s okamžitým převzetím
+obrazovky a režim trvalého příjmu na pozadí včetně spuštění po startu
+tabule. Android APK prošlo 210 a Windows aplikace 95 automatickými testy.
 
-Změny v 0.4.1 (oproti 0.4.0)
-- Nový 4. režim kvality: „Ultra ostrost (1920p · 12 Mb/s)“ (při
-  zachování všech tří stávajících režimů 960p/3 Mb/s, 1280p/5 Mb/s,
-  1600p/8 Mb/s).
-  - Na vysílači zvýšen strop H.264 levelu na AVCLevel51 (pro 1920×1200
-    na 16:10 tabletu).
-  - Na přijímači zvýšen limit rozlišení na 2560×1600, vstupní buffer
-    dekodéru na 1 MiB (s fallbackem) a TCP buffery na 128 KiB.
-- Regulace hlasitosti zvuku (nezávislá na hlasitosti videokonference tabule):
-  - Na tabletu (hlavní obrazovka): posuvník „Hlasitost zvuku na tabuli“
-    (0–100 %, výchozí 70 %) + rychlé tlačítko „Ztlumit / Obnovit zvuk“.
-    Funguje okamžitě i během běžícího přenosu pomocí přirozené
-    kvadratické křivky (AudioUtil) přímo nad PCM vzorky.
-  - Na tabuli (obrazovka příjmu): nezávislý posuvník „Hlasitost příjmu
-    na tabuli“ (AudioTrack.setVolume) uložený lokálně pro aplikaci —
-    nemění systémovou hlasitost Huawei IdeaHubu pro videokonference.
+Změny v 0.6.0 (oproti 0.4.1)
+- Více klientů a okamžité převzetí sdílení (ReceiverService):
+  - Nepřetržitá accept smyčka během běžící prezentace.
+  - Nový ověřený klient (128bitový klíč nebo 6místný PIN) plynule odpojí
+    předchozího prezentujícího a ihned převezme obraz i zvuk tabule.
+- Trvalý příjem a automatické spuštění po startu tabule (BootReceiver):
+  - Foreground služba ReceiverService (specialUse) drží porty 42521/42522
+    trvale na pozadí a při připojení prezentujícího sama otevře obrazovku.
+  - Volitelné automatické otevření QR/PIN obrazovky po startu tabule.
+- LAN vyhledávání + 6místný PIN (DiscoveryProtocol):
+  - UDP discovery na portu 42522 (bez vysílání tajného klíče/PINu) a
+    velký 6místný PIN na tabuli s ochranou proti hádání pro snadné
+    první spárování Windows notebooku.
+- Windows vysílač (složka windows/ -> TabuleLink-Windows-0.6.0.exe):
+  - Nativní Windows 10/11 WinForms x64 aplikace (.NET Framework 4.8),
+    GPU ddagrab / gdigrab přes ffmpeg, nativní WASAPI Loopback zvuk,
+    4 režimy kvality (960p–1920p), živý posuvník hlasitosti a tray režim.
 
 POUŽITÍ
-1. Na obě zařízení nainstalujte Tabule-Link-0.4.1.apk.
+1. Na tabuli (a tablet) nainstalujte Tabule-Link-0.6.0.apk.
+2. Na Windows notebooku spusťte TabuleLink-Windows-0.6.0.exe.
 2. Připojte tablet a tabuli ke stejné místní síti. Tabule může být
    připojena kabelem a tablet Wi-Fi, pokud tato síť dovoluje jejich
    vzájemné spojení. Samotný internet není potřebný.

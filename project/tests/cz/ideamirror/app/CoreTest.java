@@ -222,8 +222,23 @@ public class CoreTest {
         testNetUtil();
         testFrameQueueAndFastPacket();
         testAudioUtil();
+        testDiscoveryProtocol();
 
-        System.out.println("PASS: " + checks + " checks (pairing, malformed codes, flag sanitization, framing, single-record write, heartbeat, bounds, truncation, QR roundtrip, TLS 1.2 end-to-end, LAN subnet & interface ranking, low-latency frame queue, audio volume gain)");
+        System.out.println("PASS: " + checks + " checks (pairing, malformed codes, flag sanitization, framing, single-record write, heartbeat, bounds, truncation, QR roundtrip, TLS 1.2 end-to-end, LAN subnet & interface ranking, low-latency frame queue, audio volume gain, LAN discovery & PIN)");
+    }
+
+    static void testDiscoveryProtocol() {
+        String fp = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        String offer = DiscoveryProtocol.buildOffer("HUAWEI\tIdeaHub Pro\n", 42521, fp, "192.168.1.50");
+        DiscoveryProtocol.Offer parsed = DiscoveryProtocol.parseOffer(offer);
+        check(parsed != null && parsed.name.equals("HUAWEI IdeaHub Pro") && parsed.port == 42521 && parsed.fp.equals(fp) && parsed.ip.equals("192.168.1.50"), "discovery offer roundtrip");
+        check(DiscoveryProtocol.parseOffer("WRONG\tfoo\t42521\t" + fp + "\t192.168.1.50") == null, "reject wrong prefix");
+        check(DiscoveryProtocol.parseOffer(DiscoveryProtocol.OFFER_PREFIX + "Board\t80\t" + fp + "\t192.168.1.50") == null, "reject port < 1024");
+        check(DiscoveryProtocol.parseOffer(DiscoveryProtocol.OFFER_PREFIX + "Board\t42521\tshortfp\t192.168.1.50") == null, "reject short fp");
+        check("482 917".equals(DiscoveryProtocol.formatPin("482917")), "format 6-digit pin");
+        check("482917".equals(DiscoveryProtocol.normalizePin(" 482 917 ")), "normalize spaced pin");
+        check("482917".equals(DiscoveryProtocol.normalizePin("482-917")), "normalize dashed pin");
+        check(DiscoveryProtocol.normalizePin("12345") == null && DiscoveryProtocol.normalizePin("12345a") == null, "reject bad pin");
     }
 
     static void testAudioUtil() {
