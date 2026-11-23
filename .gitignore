@@ -11,6 +11,11 @@
 /project/local.properties
 /windows/build/
 *.idsig
+*.p12
+*.jks
+*.keystore
+/releases/*.apk
+/releases/*.exe
 /releases/*.zip
 /releases/Tabule-Link-0.1.0.apk
 /releases/Tabule-Link-0.2.1.apk

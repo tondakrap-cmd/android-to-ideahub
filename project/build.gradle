@@ -1,4 +1,9 @@
 plugins { id 'com.android.application' version '8.7.3' }
+
+// Finální podpisový klíč (není v gitu): .signing/release/tabule-link-release.p12 + password.txt
+def releaseKey = file(System.getenv('TABULE_KEYSTORE') ?: '.signing/release/tabule-link-release.p12')
+def releasePassFile = file(System.getenv('TABULE_KEYSTORE_PASS_FILE') ?: new File(releaseKey.parentFile, 'password.txt').path)
+
 android {
     namespace 'cz.ideamirror.app'
     compileSdk 35
@@ -8,6 +13,22 @@ android {
         targetSdk 35
         versionCode 10
         versionName '0.7.0'
+    }
+    signingConfigs {
+        if (releaseKey.exists() && releasePassFile.exists()) {
+            release {
+                storeFile releaseKey
+                storeType 'pkcs12'
+                storePassword releasePassFile.text.trim()
+                keyAlias 'tabule-link'
+                keyPassword releasePassFile.text.trim()
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (releaseKey.exists() && releasePassFile.exists()) { signingConfig signingConfigs.release }
+        }
     }
     sourceSets { main { manifest.srcFile 'AndroidManifest.xml'; java.srcDirs = ['src']; res.srcDirs = ['res']; assets.srcDirs = ['assets'] } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }

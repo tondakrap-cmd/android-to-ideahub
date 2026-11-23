@@ -91,7 +91,11 @@ python project/build.py \
   --android-jar <cesta-k-SDK/platforms/android-35/android.jar> \
   --output releases/Tabule-Link-0.7.0.apk
 ```
-Skript při prvním spuštění vygeneruje vlastní podpisový klíč v `project/.signing/` (je v `.gitignore`). **Aktualizaci už nainstalované aplikace sestavte se stejným klíčem jako předchozí verzi.** APK z CI je podepsané dočasným klíčem, a proto vyžaduje odinstalaci původní aplikace.
+**Podpis vydaných verzí.** Od verze 0.7.0 se všechna vydaná APK podepisují **finálním klíčem** `project/.signing/release/tabule-link-release.p12` (heslo v `password.txt` vedle, alias `tabule-link`, RSA 4096, platnost do 2126). Klíč **není v gitu** – uchovávejte jeho zálohu mimo počítač; bez něj nelze vydat aktualizaci a uživatelé by museli aplikaci odinstalovat. Otisk certifikátu (SHA-256): `96:C0:4A:5A:98:27:17:FB:C7:19:2A:75:02:49:58:49:CA:C3:52:13:D7:32:EF:16:81:25:69:55:A5:FF:DC:17`.
+
+- Pokud finální klíč existuje, `build.py` ho použije automaticky; s `--release` sestavení bez něj selže. Jinou cestu lze zadat proměnnými `TABULE_KEYSTORE` a `TABULE_KEYSTORE_PASS_FILE` (platí i pro Gradle).
+- Každá nová verze musí mít **vyšší `versionCode`** (v `AndroidManifest.xml` i `build.gradle`), jinak se nenainstaluje jako aktualizace.
+- Bez finálního klíče (např. v CI) se APK podepíše dočasným testovacím klíčem – takové APK nejde nainstalovat přes vydanou verzi.
 
 Alternativně lze složku `project/` otevřít v Android Studiu (JDK 17, `compileSdk 35`, AGP 8.7.3).
 

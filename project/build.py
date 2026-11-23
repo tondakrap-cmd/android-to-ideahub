@@ -7,6 +7,8 @@ p.add_argument('--java-home',required=True,type=pathlib.Path)
 p.add_argument('--build-tools',required=True,type=pathlib.Path)
 p.add_argument('--android-jar',required=True,type=pathlib.Path)
 p.add_argument('--output',type=pathlib.Path,default=root/'build'/'Tabule-Link-0.7.0.apk')
+p.add_argument('--release',action='store_true',help='vyžadovat finální klíč (selže, pokud chybí)')
+p.add_argument('--test-key',action='store_true',help='podepsat testovacím klíčem i když finální existuje')
 a=p.parse_args()
 build=root/'build'; build.mkdir(exist_ok=True)
 classes=build/'classes'; classes.mkdir(exist_ok=True)
@@ -34,12 +36,23 @@ with zipfile.ZipFile(build/'base.apk') as src,zipfile.ZipFile(unsigned,'w',zipfi
  for c in dex.glob('*.dex'):z.write(c,c.name)
 run(bt/('zipalign'+exe),'-f','-p','4',unsigned,build/'aligned.apk')
 signing=root/'.signing';signing.mkdir(exist_ok=True)
-secret=signing/'password.txt'
-if not secret.exists():secret.write_text(secrets.token_urlsafe(32),encoding='ascii')
-key=signing/'test-signing.p12'
-if not key.exists():
- run(a.java_home.resolve()/'bin'/('keytool'+exe),'-genkeypair','-keystore',key,'-storetype','PKCS12','-storepass:file',secret,'-keypass:file',secret,
-     '-alias','tabule-link','-keyalg','RSA','-keysize','3072','-validity','3650','-dname','CN=Tabule Link Test Build, O=Local Development, C=CZ')
+# Finální (release) klíč: všechny vydané verze MUSÍ být podepsány stejným klíčem, jinak Android
+# odmítne aktualizaci. Cestu lze přepsat proměnnými TABULE_KEYSTORE / TABULE_KEYSTORE_PASS_FILE.
+release_key=pathlib.Path(os.environ.get('TABULE_KEYSTORE',signing/'release'/'tabule-link-release.p12'))
+release_secret=pathlib.Path(os.environ.get('TABULE_KEYSTORE_PASS_FILE',release_key.parent/'password.txt'))
+if a.release and not (release_key.exists() and release_secret.exists()):
+ raise SystemExit(f'Chybí finální klíč {release_key} nebo heslo {release_secret}.')
+if release_key.exists() and release_secret.exists() and not a.test_key:
+ key,secret=release_key,release_secret
+ print('Podepisuji FINÁLNÍM klíčem:',key)
+else:
+ secret=signing/'password.txt'
+ if not secret.exists():secret.write_text(secrets.token_urlsafe(32),encoding='ascii')
+ key=signing/'test-signing.p12'
+ if not key.exists():
+  run(a.java_home.resolve()/'bin'/('keytool'+exe),'-genkeypair','-keystore',key,'-storetype','PKCS12','-storepass:file',secret,'-keypass:file',secret,
+      '-alias','tabule-link','-keyalg','RSA','-keysize','3072','-validity','3650','-dname','CN=Tabule Link Test Build, O=Local Development, C=CZ')
+ print('POZOR: podepisuji TESTOVACÍM klíčem (takové APK nejde instalovat jako aktualizaci vydané verze).')
 a.output=a.output.resolve();a.output.parent.mkdir(parents=True,exist_ok=True)
 run(java,'-jar',bt/'lib'/'apksigner.jar','sign','--ks',key,'--ks-pass','file:'+str(secret),'--out',a.output,build/'aligned.apk')
 run(java,'-jar',bt/'lib'/'apksigner.jar','verify','--verbose','--print-certs',a.output)
