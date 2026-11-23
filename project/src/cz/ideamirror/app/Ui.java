@@ -11,7 +11,8 @@ import android.view.*;
 import android.widget.*;
 
 final class Ui {
-    static final String VERSION = "0.6.0";
+    static final String VERSION = "0.7.0";
+    static final String ROLE_PREFS = "tabule_role", ROLE_BOARD = "board", ROLE_SENDER = "sender";
 
     static final int BG = Color.rgb(11, 19, 32);
     static final int BG_BOTTOM = Color.rgb(18, 31, 49);
@@ -151,12 +152,50 @@ final class Ui {
         }
     }
 
+    static String role(Context c) { return c.getSharedPreferences(ROLE_PREFS, Context.MODE_PRIVATE).getString("role", null); }
+    static void setRole(Context c, String role) { c.getSharedPreferences(ROLE_PREFS, Context.MODE_PRIVATE).edit().putString("role", role).apply(); }
+
+    /** Title + subtitle + switch row. */
+    static Switch toggleRow(LinearLayout parent, String title, String subtitle, boolean checked, CompoundButton.OnCheckedChangeListener l) {
+        Context c = parent.getContext();
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout labels = column(c);
+        TextView t = text(c, title, 15);
+        t.setPadding(0, 0, 0, 0);
+        labels.addView(t);
+        if (subtitle != null) {
+            TextView st = muted(c, subtitle, 12);
+            st.setPadding(0, 0, 0, 0);
+            labels.addView(st);
+        }
+        row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+        Switch sw = new Switch(c);
+        sw.setChecked(checked);
+        sw.setOnCheckedChangeListener(l);
+        row.addView(sw);
+        parent.addView(row, vSpace(c, 4, 8));
+        return sw;
+    }
+
+    static String ago(long ms) {
+        if (ms <= 0) return "nikdy";
+        long d = Math.max(0, System.currentTimeMillis() - ms) / 1000;
+        if (d < 60) return "právě teď";
+        if (d < 3600) return "před " + (d / 60) + " min";
+        if (d < 86400) return "před " + (d / 3600) + " h";
+        return "před " + (d / 86400) + " dny";
+    }
+
     static void error(Activity a, String s) { error(a, s, null); }
 
-    static void error(Activity a, String s, Runnable onDismiss) {
+    static void error(Activity a, String s, Runnable onDismiss) { message(a, "Připojení se nepodařilo", s, onDismiss); }
+
+    static void message(Activity a, String title, String s, Runnable onDismiss) {
         if (!a.isFinishing() && !a.isDestroyed()) {
             new AlertDialog.Builder(a)
-                .setTitle("Připojení se nepodařilo")
+                .setTitle(title)
                 .setMessage(s)
                 .setPositiveButton("Rozumím", (d, w) -> { if (onDismiss != null) onDismiss.run(); })
                 .setOnCancelListener(d -> { if (onDismiss != null) onDismiss.run(); })

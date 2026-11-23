@@ -12,7 +12,7 @@ namespace TabuleLinkWin
 {
     public static class WireConstants
     {
-        public const string Version = "0.6.3";
+        public const string Version = "0.7.0";
         public const int Magic = 0x54424c31;
         public const int MagicPinOk = 0x54424c32;
         public const int DefaultPort = 42521;
@@ -55,6 +55,7 @@ namespace TabuleLinkWin
         public static bool IsValidLanIpv4(string host)
         {
             if (string.IsNullOrEmpty(host)) return false;
+            for (int i = 0; i < host.Length; i++) if (host[i] != '.' && (host[i] < '0' || host[i] > '9')) return false;
             string[] parts = host.Split('.');
             if (parts.Length != 4) return false;
             for (int i = 0; i < 4; i++)
@@ -96,6 +97,7 @@ namespace TabuleLinkWin
         public bool IsAudio { get { return (Flags & WireConstants.FlagAudio) != 0; } }
         public bool IsConfig { get { return (Flags & WireConstants.FlagCodecConfig) != 0; } }
         public bool IsKeyFrame { get { return (Flags & WireConstants.FlagKeyFrame) != 0; } }
+        public bool IsControl { get { return (Flags & Proto2.FlagControl) != 0; } }
     }
 
     public static class WireIO
@@ -276,62 +278,90 @@ namespace TabuleLinkWin
             string fp = parts[3].Trim().ToLowerInvariant();
             if (fp.Length != 64 || !Regex.IsMatch(fp, "^[a-f0-9]{64}$")) return null;
             string ip = parts[4].Trim();
-            if (ip.Length == 0) ip = fallbackIp;
-            if (!PairCode.IsValidLanIpv4(ip)) return null;
+            if (ip.Length == 0) ip = fallbackIp ?? "";
+            if (ip.Length > 0 && !PairCode.IsValidLanIpv4(ip)) return null;
+            name = Proto2.Sanitize(name, 64, "Tabule Link");
             return new DiscoveryOffer(name, port, fp, ip);
+        }
+
+        /// <summary>Prefers the address the reply came from (multi-homed boards may advertise an unreachable one).</summary>
+        public static string PreferredIp(string sourceIp, string advertisedIp)
+        {
+            if (PairCode.IsValidLanIpv4(sourceIp)) return sourceIp;
+            if (PairCode.IsValidLanIpv4(advertisedIp)) return advertisedIp;
+            return null;
         }
 
         public static List<DiscoveryOffer> DiscoverInLan(int timeoutMs)
         {
-            Dictionary<string, DiscoveryOffer> found = new Dictionary<string, DiscoveryOffer>();
             List<IPEndPoint> targets = new List<IPEndPoint>();
             targets.Add(new IPEndPoint(IPAddress.Broadcast, WireConstants.DiscoveryPort));
-
             foreach (LocalEndpoint ep in LocalNet.GetEndpoints())
             {
                 IPAddress bcast = ep.BroadcastAddress();
                 if (bcast != null) targets.Add(new IPEndPoint(bcast, WireConstants.DiscoveryPort));
             }
+            return Discover(timeoutMs, targets);
+        }
 
-            using (UdpClient udp = new UdpClient())
+        /// <summary>Waits the full timeout (0.6.x gave up after the first 250 ms of silence); one offer per board fingerprint.</summary>
+        public static List<DiscoveryOffer> Discover(int timeoutMs, List<IPEndPoint> targets)
+        {
+            Dictionary<string, DiscoveryOffer> found = new Dictionary<string, DiscoveryOffer>();
+            List<string> order = new List<string>();
+            byte[] req = Encoding.UTF8.GetBytes(WireConstants.DiscoverRequest);
+            try
             {
-                udp.EnableBroadcast = true;
-                udp.Client.ReceiveTimeout = 250;
-                byte[] req = Encoding.UTF8.GetBytes(WireConstants.DiscoverRequest);
-                for (int round = 0; round < 2; round++)
+                using (UdpClient udp = new UdpClient())
                 {
-                    foreach (IPEndPoint ep in targets)
+                    udp.EnableBroadcast = true;
+                    int end = Environment.TickCount + Math.Max(300, timeoutMs);
+                    int nextSend = Environment.TickCount;
+                    int rounds = 0;
+                    while (true)
                     {
-                        try { udp.Send(req, req.Length, ep); } catch { }
-                    }
-                    int deadline = Environment.TickCount + Math.Max(300, timeoutMs / 2);
-                    while (Environment.TickCount < deadline)
-                    {
+                        int now = Environment.TickCount;
+                        if (now - end >= 0) break;
+                        if (now - nextSend >= 0 && rounds < 3)
+                        {
+                            foreach (IPEndPoint ep in targets)
+                            {
+                                try { udp.Send(req, req.Length, ep); } catch { }
+                            }
+                            rounds++;
+                            nextSend = now + Math.Max(200, timeoutMs / 3);
+                        }
+                        int wait = Math.Max(1, Math.Min(250, Math.Min(end - now, Math.Max(1, nextSend - now))));
+                        udp.Client.ReceiveTimeout = wait;
                         try
                         {
                             IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
                             byte[] data = udp.Receive(ref remote);
-                            string text = Encoding.UTF8.GetString(data);
-                            DiscoveryOffer offer = Parse(text, remote.Address.ToString());
-                            if (offer != null)
-                            {
-                                string key = offer.Ip + ":" + offer.Port.ToString(CultureInfo.InvariantCulture) + ":" + offer.Fingerprint;
-                                found[key] = offer;
-                            }
+                            DiscoveryOffer offer = Parse(Encoding.UTF8.GetString(data), null);
+                            string ip = offer == null ? null : PreferredIp(remote.Address.ToString(), offer.Ip);
+                            if (offer == null || ip == null) continue;
+                            if (!found.ContainsKey(offer.Fingerprint)) order.Add(offer.Fingerprint);
+                            found[offer.Fingerprint] = new DiscoveryOffer(offer.Name, offer.Port, offer.Fingerprint, ip);
                         }
-                        catch (SocketException)
+                        catch (SocketException ex)
                         {
-                            break;
-                        }
-                        catch
-                        {
+                            if (ex.SocketErrorCode == SocketError.TimedOut || ex.SocketErrorCode == SocketError.WouldBlock) continue;
+                            if (ex.SocketErrorCode == SocketError.ConnectionReset) continue; // ICMP port unreachable on Windows
                             break;
                         }
                     }
-                    if (found.Count > 0) break;
                 }
             }
-            return new List<DiscoveryOffer>(found.Values);
+            catch { }
+            List<DiscoveryOffer> result = new List<DiscoveryOffer>();
+            foreach (string fp in order) result.Add(found[fp]);
+            return result;
+        }
+
+        public static DiscoveryOffer FindByFingerprint(string fp, int timeoutMs)
+        {
+            foreach (DiscoveryOffer o in DiscoverInLan(timeoutMs)) if (o.Fingerprint == fp) return o;
+            return null;
         }
     }
 
@@ -466,6 +496,9 @@ namespace TabuleLinkWin
         private bool auHasVcl;
         private bool auIsKey;
 
+        /// <summary>Most recent SPS+PPS (re-sent first after a reconnect).</summary>
+        public byte[] LastConfig { get; private set; }
+
         public AnnexBParser(Action<int, byte[]> onPacket)
         {
             this.onPacket = onPacket;
@@ -591,6 +624,7 @@ namespace TabuleLinkWin
             Buffer.BlockCopy(lastSps, 0, cfg, 0, lastSps.Length);
             Buffer.BlockCopy(lastPps, 0, cfg, lastSps.Length, lastPps.Length);
             sentConfig = true;
+            LastConfig = cfg;
             onPacket(WireConstants.FlagCodecConfig, cfg);
         }
 
@@ -709,6 +743,7 @@ namespace TabuleLinkWin
         private readonly object sync = new object();
         private readonly LinkedList<Packet> videoQueue = new LinkedList<Packet>();
         private readonly LinkedList<Packet> audioQueue = new LinkedList<Packet>();
+        private readonly LinkedList<Packet> controlQueue = new LinkedList<Packet>();
         private bool closed;
         private bool awaitingKeyFrame;
         private long droppedVideo;
@@ -722,6 +757,12 @@ namespace TabuleLinkWin
             lock (sync)
             {
                 if (closed) return;
+                if (pkt.IsControl)
+                {
+                    if (controlQueue.Count < 64) controlQueue.AddLast(pkt);
+                    System.Threading.Monitor.PulseAll(sync);
+                    return;
+                }
                 if (pkt.IsAudio)
                 {
                     if (!pkt.IsConfig)
@@ -810,13 +851,42 @@ namespace TabuleLinkWin
             }
         }
 
+        /// <summary>Drops queued video frames and waits for the next key frame (pause/resume, reconnect, receiver request).</summary>
+        public void RequireKeyFrame()
+        {
+            lock (sync)
+            {
+                DropNonConfigVideo();
+                awaitingKeyFrame = true;
+            }
+        }
+
+        /// <summary>Drops everything incl. codec config (capture restarted with a new resolution).</summary>
+        public void ClearVideo()
+        {
+            lock (sync)
+            {
+                droppedVideo += CountNonConfig(videoQueue);
+                videoQueue.Clear();
+                awaitingKeyFrame = false;
+            }
+        }
+
+        public bool IsAwaitingKeyFrame { get { lock (sync) { return awaitingKeyFrame; } } }
+
         public Packet Poll(int timeoutMs)
         {
             lock (sync)
             {
-                if (videoQueue.Count == 0 && audioQueue.Count == 0 && !closed && timeoutMs > 0)
+                if (videoQueue.Count == 0 && audioQueue.Count == 0 && controlQueue.Count == 0 && !closed && timeoutMs > 0)
                 {
                     System.Threading.Monitor.Wait(sync, timeoutMs);
+                }
+                if (controlQueue.Count > 0)
+                {
+                    Packet c = controlQueue.First.Value;
+                    controlQueue.RemoveFirst();
+                    return c;
                 }
                 if (videoQueue.Count > 0 && videoQueue.First.Value.IsConfig)
                 {

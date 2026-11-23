@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    name: Android — testy a APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Přenosné testy (protokol, SPAKE2, QR, TLS)
+        run: python3 project/test.py --java-home "$JAVA_HOME"
+      - name: Android SDK (build-tools 35, platforma 35)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" "platforms;android-35" > /dev/null
+      - name: Sestavení APK (podepsáno dočasným CI klíčem)
+        run: |
+          python3 project/build.py --java-home "$JAVA_HOME" \
+            --build-tools "$ANDROID_HOME/build-tools/35.0.0" \
+            --android-jar "$ANDROID_HOME/platforms/android-35/android.jar" \
+            --output build/Tabule-Link-0.7.0-ci.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tabule-Link-0.7.0-android-ci
+          path: build/Tabule-Link-0.7.0-ci.apk
+
+  windows:
+    name: Windows — testy a EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: FFmpeg pro testy parserů
+        run: choco install ffmpeg -y --no-progress
+      - name: Testy (protokol v2, parsery H.264/AAC)
+        shell: pwsh
+        run: |
+          $env:Path = "C:\ProgramData\chocolatey\bin;" + $env:Path
+          ./Test-Windows.ps1
+      - name: Sestavení EXE
+        shell: pwsh
+        run: ./Build-Windows.ps1 -OutputFile "$PWD\build\TabuleLink-Windows-0.7.0.exe"
+      - name: Kouřový test (spuštění okna bez pádu)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "$PWD\build\TabuleLink-Windows-0.7.0.exe" -PassThru
+          Start-Sleep -Seconds 8
+          $p.Refresh()
+          $title = $p.MainWindowTitle
+          Write-Output "HasExited=$($p.HasExited) Title='$title'"
+          if ($p.HasExited) { throw "Aplikace se ukončila (kód $($p.ExitCode))." }
+          if ($title -like '*chyba*') { throw "Aplikace zobrazila chybu spuštění: $title" }
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TabuleLink-Windows-0.7.0
+          path: build/TabuleLink-Windows-0.7.0.exe

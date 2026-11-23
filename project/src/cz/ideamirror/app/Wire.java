@@ -16,7 +16,7 @@ import javax.net.ssl.*;
 import javax.security.auth.x500.X500Principal;
 
 final class Wire {
-    static final int MAGIC = 0x54424c31, MAGIC_PIN_OK = 0x54424c32, MAX_FRAME = Packet.MAX_SIZE;
+    static final int MAGIC = Proto.MAGIC_V1, MAX_FRAME = Packet.MAX_SIZE;
     static final int DEFAULT_PORT = 42521;
     static final String ALIAS = "tabule-link-tls-v2";
     static final SecureRandom RANDOM = new SecureRandom();
@@ -51,9 +51,7 @@ final class Wire {
 
     static final class Pair extends PairCode { Pair(String text) throws IOException { super(text); } }
 
-    static String uri(String host, int port, String fp, String token) {
-        return "tabulelink://" + host + ":" + port + "?fp=" + fp + "&key=" + token;
-    }
+    static String uri(String host, int port, String fp, String token) { return PairCode.build(host, port, fp, token); }
 
     private static String transportLabel(NetworkCapabilities caps, String iface) {
         if (caps != null) {
@@ -192,7 +190,21 @@ final class Wire {
 
     private static TlsSupport.Identity loadOrCreateServerIdentity(Context context) throws Exception {
         String keystoreFailure = null;
-        try {
+        // AndroidKeyStore can be briefly unavailable right after boot: retry before falling back, otherwise the
+        // board would present a different certificate and every paired device would refuse it.
+        for (int attempt = 0; attempt < 4; attempt++) {
+            try {
+                return loadKeystoreIdentity();
+            } catch (Exception e) {
+                keystoreFailure = e.getClass().getSimpleName();
+                try { Thread.sleep(400L * (attempt + 1)); } catch (InterruptedException ie) { break; }
+            }
+        }
+        return loadFallbackIdentity(context, keystoreFailure);
+    }
+
+    private static TlsSupport.Identity loadKeystoreIdentity() throws Exception {
+        {
             KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
             ks.load(null);
             if (!ks.containsAlias(ALIAS)) {
@@ -212,10 +224,10 @@ final class Wire {
             if (cert == null || key == null) throw new KeyStoreException("Prázdný záznam v AndroidKeyStore.");
             TlsSupport.verifySigningKey(key, cert);
             return new TlsSupport.Identity(cert, key, fingerprint(cert), "AndroidKeyStore (" + ALIAS + ")");
-        } catch (Exception e) {
-            keystoreFailure = e.getClass().getSimpleName();
         }
+    }
 
+    private static TlsSupport.Identity loadFallbackIdentity(Context context, String keystoreFailure) throws Exception {
         // Persistent private-storage fallback so saved pairing works even if hardware Keystore is unavailable.
         if (context != null) {
             File certFile = new File(context.getFilesDir(), "tls-fallback-cert.der");
@@ -224,7 +236,7 @@ final class Wire {
                 if (certFile.exists() && keyFile.exists()) {
                     X509Certificate cert = (X509Certificate) CertificateFactory.getInstance("X.509")
                         .generateCertificate(new ByteArrayInputStream(readFileBytes(certFile)));
-                    cert.checkValidity();
+                    // No checkValidity(): clients pin the fingerprint, an expired fallback certificate must not change identity.
                     PrivateKey key = KeyFactory.getInstance("EC").generatePrivate(new PKCS8EncodedKeySpec(readFileBytes(keyFile)));
                     TlsSupport.verifySigningKey(key, cert);
                     return new TlsSupport.Identity(cert, key, fingerprint(cert), "uložený EC klíč (fallback: " + keystoreFailure + ")");
@@ -240,39 +252,17 @@ final class Wire {
         return TlsSupport.generateSelfSignedEcIdentity(RANDOM, "efemérní EC klíč (fallback: " + keystoreFailure + ")");
     }
 
-    static String loadOrCreateServerSecret(Context context, boolean forceNew) {
-        if (context == null) return token();
-        SharedPreferences prefs = context.getSharedPreferences("tabule_server", Context.MODE_PRIVATE);
-        String existing = prefs.getString("secret", null);
-        if (!forceNew && existing != null && existing.matches("[a-f0-9]{32}")) {
-            return existing;
-        }
-        String fresh = token();
-        prefs.edit().putString("secret", fresh).apply();
-        return fresh;
-    }
-
-    static String loadOrCreateServerPin(Context context, boolean forceNew) {
-        String fresh = String.format(Locale.ROOT, "%06d", RANDOM.nextInt(1_000_000));
-        if (context == null) return fresh;
-        SharedPreferences prefs = context.getSharedPreferences("tabule_server", Context.MODE_PRIVATE);
-        String existing = prefs.getString("pin", null);
-        if (!forceNew && existing != null && existing.matches("[0-9]{6}")) {
-            return existing;
-        }
-        prefs.edit().putString("pin", fresh).apply();
-        return fresh;
-    }
-
     static final class DiscoveryResponder implements Closeable {
         private final DatagramSocket udp;
         private final Thread thread;
         private final Context appContext;
         private volatile boolean active = true;
         private volatile String advertisedIp = "";
+        private volatile String deviceName;
 
         DiscoveryResponder(Context context, String deviceName, int tcpPort, String fp, String initialIp) throws Exception {
             this.appContext = context == null ? null : context.getApplicationContext();
+            this.deviceName = deviceName;
             this.advertisedIp = initialIp == null ? "" : initialIp;
             DatagramSocket s = new DatagramSocket(null);
             s.setReuseAddress(true);
@@ -292,7 +282,7 @@ final class Wire {
                                 List<Endpoint> eps = endpoints(appContext);
                                 if (!eps.isEmpty()) ip = eps.get(0).ip;
                             }
-                            byte[] reply = DiscoveryProtocol.buildOffer(deviceName, tcpPort, fp, ip)
+                            byte[] reply = DiscoveryProtocol.buildOffer(this.deviceName, tcpPort, fp, ip)
                                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                             DatagramPacket resp = new DatagramPacket(reply, reply.length, req.getSocketAddress());
                             udp.send(resp);
@@ -307,6 +297,7 @@ final class Wire {
         }
 
         void setAdvertisedIp(String ip) { this.advertisedIp = ip == null ? "" : ip; }
+        void setDeviceName(String name) { this.deviceName = name; }
 
         @Override public void close() {
             active = false;
@@ -318,58 +309,57 @@ final class Wire {
     static final class Server implements Closeable {
         final SSLServerSocket socket;
         final String fp;
-        final String secret;
-        final String pin;
         final String keySource;
+        final boolean defaultPort;
 
-        Server(Context context, boolean forceNewSecret) throws Exception {
+        Server(Context context) throws Exception {
             TlsSupport.Identity id = loadOrCreateServerIdentity(context);
             fp = id.fp;
             keySource = id.source;
-            secret = loadOrCreateServerSecret(context, forceNewSecret);
-            pin = loadOrCreateServerPin(context, forceNewSecret);
             X509ExtendedKeyManager km = TlsSupport.serverKeyManager(ALIAS, id.cert, id.key);
             SSLContext ctx = SSLContext.getInstance("TLS");
             ctx.init(new KeyManager[]{km}, null, RANDOM);
             SSLServerSocketFactory factory = ctx.getServerSocketFactory();
-            SSLServerSocket bound;
-            try {
-                bound = (SSLServerSocket) factory.createServerSocket();
-                bound.setReuseAddress(true);
-                bound.bind(new InetSocketAddress(DEFAULT_PORT), 2);
-            } catch (IOException busy) {
-                bound = (SSLServerSocket) factory.createServerSocket(0, 2);
+            SSLServerSocket bound = null;
+            // The fixed port is part of every saved pairing: retry instead of silently moving to a random port
+            // (0.6 did that whenever two start requests raced at boot).
+            for (int attempt = 0; attempt < 10 && bound == null; attempt++) {
+                SSLServerSocket s = (SSLServerSocket) factory.createServerSocket();
+                try {
+                    s.setReuseAddress(true);
+                    s.bind(new InetSocketAddress(DEFAULT_PORT), 16);
+                    bound = s;
+                } catch (IOException busy) {
+                    try { s.close(); } catch (IOException ignored) {}
+                    try { Thread.sleep(400); } catch (InterruptedException ie) { break; }
+                }
             }
+            defaultPort = bound != null;
+            if (bound == null) bound = (SSLServerSocket) factory.createServerSocket(0, 16);
             socket = bound;
-            try { socket.setReceiveBufferSize(128 * 1024); } catch (Exception ignored) {}
+            try { socket.setReceiveBufferSize(256 * 1024); } catch (Exception ignored) {}
             socket.setEnabledProtocols(new String[]{"TLSv1.2"});
         }
 
         public void close() throws IOException { socket.close(); }
     }
 
-    static SSLSocket connect(Pair p, PhaseListener listener) throws Exception {
-        X509TrustManager tm = TlsSupport.pinningTrustManager(p.fp);
+    /** Presenter side: TCP + TLS 1.2 with strict certificate pinning. */
+    static SSLSocket openTls(String host, int port, String fp, int connectTimeoutMs, PhaseListener listener) throws Exception {
+        X509TrustManager tm = TlsSupport.pinningTrustManager(fp);
         SSLContext ctx = SSLContext.getInstance("TLS");
         ctx.init(null, new TrustManager[]{tm}, RANDOM);
         SSLSocket s = (SSLSocket) ctx.getSocketFactory().createSocket();
         try {
             s.setEnabledProtocols(new String[]{"TLSv1.2"});
-            try { s.setSendBufferSize(128 * 1024); } catch (Exception ignored) {}
+            try { s.setSendBufferSize(256 * 1024); } catch (Exception ignored) {}
             try { s.setReceiveBufferSize(128 * 1024); } catch (Exception ignored) {}
-            if (listener != null) listener.onPhase("TCP připojení k " + p.host + ":" + p.port);
-            s.connect(new InetSocketAddress(p.host, p.port), 8000);
+            if (listener != null) listener.onPhase("TCP připojení k " + host + ":" + port);
+            s.connect(new InetSocketAddress(host, port), connectTimeoutMs);
             s.setSoTimeout(8000);
             s.setTcpNoDelay(true);
-            if (listener != null) listener.onPhase("TLS 1.2 handshake");
+            if (listener != null) listener.onPhase("TLS handshake");
             s.startHandshake();
-            if (listener != null) listener.onPhase("Ověření párovacího klíče");
-            DataOutputStream out = new DataOutputStream(s.getOutputStream());
-            out.writeUTF(p.secret);
-            out.flush();
-            if (new DataInputStream(s.getInputStream()).readInt() != MAGIC) {
-                throw new IOException("Tabule připojení odmítla.");
-            }
             return s;
         } catch (Exception e) {
             close(s);

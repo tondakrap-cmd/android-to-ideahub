@@ -10,7 +10,7 @@ namespace TabuleLinkWin
     {
         private static int checks;
 
-        private static void Check(bool ok, string msg)
+        internal static void Check(bool ok, string msg)
         {
             checks++;
             if (!ok) throw new Exception("FAIL: " + msg);
@@ -157,7 +157,8 @@ namespace TabuleLinkWin
             TestWireIoAndAudioUtil();
             TestFrameQueue();
             TestRealFfmpegParsers();
-            Console.WriteLine("PASS: " + checks + " Windows checks (PairCode, Discovery, PIN, WireIO, AudioUtil, FrameQueue, real ffmpeg H.264 Annex-B + AAC ADTS parsing)");
+            Proto2Tests.Run();
+            Console.WriteLine("PASS: " + checks + " Windows checks (PairCode, Discovery, PIN, WireIO, AudioUtil, FrameQueue, real ffmpeg H.264 Annex-B + AAC ADTS parsing, protocol v2: SPAKE2 vector shared with Java, hello, board store, geometry, control)");
         }
     }
 }

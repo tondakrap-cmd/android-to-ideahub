@@ -7,8 +7,7 @@ namespace TabuleLinkWin
 {
     internal static class Program
     {
-        [DllImport("user32.dll")]
-        private static extern bool SetProcessDPIAware();
+        public static string DpiMode = "-";
 
         [STAThread]
         private static void Main()
@@ -24,7 +23,7 @@ namespace TabuleLinkWin
             };
             try
             {
-                try { SetProcessDPIAware(); } catch { }
+                DpiMode = Native.EnableDpiAwareness();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new MainForm());

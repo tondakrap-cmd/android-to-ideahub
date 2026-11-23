@@ -23,6 +23,7 @@ final class FrameQueue {
 
     private final ArrayDeque<Entry> videoQueue = new ArrayDeque<>();
     private final ArrayDeque<Entry> audioQueue = new ArrayDeque<>();
+    private final ArrayDeque<Entry> controlQueue = new ArrayDeque<>();
     private boolean closed = false;
     private boolean awaitingKeyFrame = false;
     private long lastSyncRequestMs = 0L;
@@ -31,6 +32,11 @@ final class FrameQueue {
 
     synchronized boolean offer(Packet packet, long nowMs) {
         if (closed) return false;
+        if (Packet.isControl(packet.flags)) {
+            if (controlQueue.size() < 64) controlQueue.addLast(new Entry(packet, nowMs));
+            notifyAll();
+            return false;
+        }
         if (Packet.isAudio(packet.flags)) {
             offerAudio(packet, nowMs);
             return false;
@@ -135,10 +141,27 @@ final class FrameQueue {
         }
     }
 
+    /** Drops queued video and waits for the next key frame (resume after pause, reconnect, surface swap). */
+    synchronized void requireKeyFrame() {
+        dropAllNonConfig(videoQueue);
+        awaitingKeyFrame = true;
+    }
+
+    /** Drops all queued video incl. codec config (encoder is being replaced after a format change). */
+    synchronized void clearVideo() {
+        droppedFrames += nonConfigCount(videoQueue);
+        videoQueue.clear();
+        awaitingKeyFrame = false;
+    }
+
+    synchronized boolean isAwaitingKeyFrame() { return awaitingKeyFrame; }
+
     synchronized Packet poll(long timeoutMs) throws InterruptedException {
-        if (videoQueue.isEmpty() && audioQueue.isEmpty() && !closed && timeoutMs > 0) {
+        if (videoQueue.isEmpty() && audioQueue.isEmpty() && controlQueue.isEmpty() && !closed && timeoutMs > 0) {
             wait(timeoutMs);
         }
+        Entry c = controlQueue.pollFirst();
+        if (c != null) return c.packet;
         // Prioritize any codec config first, then lightweight audio frames, then video frames.
         Entry vHead = videoQueue.peekFirst();
         if (vHead != null && Packet.isConfig(vHead.packet.flags)) {
@@ -158,7 +181,7 @@ final class FrameQueue {
     }
 
     synchronized boolean isClosed() { return closed; }
-    synchronized int size() { return videoQueue.size() + audioQueue.size(); }
+    synchronized int size() { return videoQueue.size() + audioQueue.size() + controlQueue.size(); }
     synchronized long droppedFrames() { return droppedFrames; }
     synchronized long droppedAudio() { return droppedAudio; }
 }
