@@ -19,6 +19,7 @@
 ### Bezpečnost (protokol v2)
 - **Klíč pro každé zařízení**: tabule ukládá jen jeho hash a v Správě lze zařízení jednotlivě odvolat.
 - **QR kód obsahuje jednorázový token**, ne trvalý klíč. **PIN se mění** po každém spárování a po opakovaných chybných pokusech.
+- Ověření a výměna QR tokenu i PINu probíhají pod jedním zámkem: ani dvě souběžná spojení se stejným tokenem nebo PINem nespárují dvě zařízení.
 - **PIN přes SPAKE2** (RFC 3526, 2048 bit): PIN se neposílá a ověření zahrnuje otisk certifikátu tabule, takže podvržená tabule v síti dostane nejvýše jeden pokus a nemůže párování přeposlat.
 - **Ochrana proti hádání**: exponenciální zámek pro každou adresu plus globální limit, takže útočník nezablokuje ostatní.
 - **Moderátorský režim**: převzetí obrazovky musí potvrdit někdo u tabule.

@@ -78,23 +78,38 @@ final class ProtoTest {
 
     static final class Ctx implements Proto.ServerContext {
         String legacy = "0123456789abcdef0123456789abcdef";
-        String token = "fedcba9876543210fedcba9876543210";
-        String pin = "246810";
         final DeviceRegistry reg = new DeviceRegistry();
         final AuthLimiter limiter = new AuthLimiter();
         final AtomicInteger tokenRotations = new AtomicInteger(), pinRotations = new AtomicInteger();
+        volatile String storedToken = "fedcba9876543210fedcba9876543210", storedPin = "246810";
+        final PairingCredentials creds = new PairingCredentials(new PairingCredentials.Store() {
+            public String loadToken() { return storedToken; }
+            public void saveToken(String t) { tokenRotations.incrementAndGet(); storedToken = t; }
+            public String loadPin() { return storedPin; }
+            public void savePin(String p) { pinRotations.incrementAndGet(); storedPin = p; }
+        }, new SecureRandom());
+        /** When set, the first two random() calls (right after the PIN ticket is taken) wait for each other. */
+        volatile CyclicBarrier ticketBarrier;
+        final AtomicInteger randomCalls = new AtomicInteger();
         long now = 1_000_000L;
+        String token() { return creds.token(); }
+        String pin() { return creds.pin(); }
         public String fingerprint() { return VEC_FP; }
         public String boardName() { return "Zasedačka 2.14"; }
         public String legacySecret() { return legacy; }
-        public String qrToken() { return token; }
-        public String pin() { return pin; }
+        public PairingCredentials credentials() { return creds; }
         public DeviceRegistry registry() { return reg; }
         public AuthLimiter limiter() { return limiter; }
-        public SecureRandom random() { return new SecureRandom(); }
+        public SecureRandom random() {
+            CyclicBarrier b = ticketBarrier;
+            if (b != null && randomCalls.incrementAndGet() <= 2) {
+                try { b.await(5, TimeUnit.SECONDS); } catch (Exception ignored) {}
+            }
+            return new SecureRandom();
+        }
         public long nowMs() { return now; }
-        public void onTokenUsed() { tokenRotations.incrementAndGet(); token = "11112222333344445555666677778888"; }
-        public void onPinRotationNeeded() { pinRotations.incrementAndGet(); pin = "135799"; limiter.onPinRotated(); }
+        public void onCredentialsChanged() {}
+        public void onPinRotationNeeded() { creds.rotatePin(); limiter.onPinRotated(); }
         public void onRegistryChanged() {}
     }
 
@@ -132,7 +147,7 @@ final class ProtoTest {
 
         // Token pairing (QR) → device key issued, token rotated
         Object[] r = handshake(ctx, "10.0.0.5", (in, out) -> Proto.clientHello(in, out,
-            new Proto.Hello(Proto.METHOD_TOKEN, "-", ctx.token, "Tablet | Jana\n", caps(Proto.CAP_CTL, Proto.CAP_PAIR))));
+            new Proto.Hello(Proto.METHOD_TOKEN, "-", ctx.token(), "Tablet | Jana\n", caps(Proto.CAP_CTL, Proto.CAP_PAIR))));
         check(r[0] instanceof Proto.AuthResult && r[1] instanceof Proto.ClientResult, "token pairing ok: " + r[0] + " / " + r[1]);
         Proto.ClientResult cr = (Proto.ClientResult) r[1];
         Proto.AuthResult ar = (Proto.AuthResult) r[0];
@@ -160,7 +175,7 @@ final class ProtoTest {
         check(r[1] instanceof Proto.ProtoException, "revoked device rejected");
 
         // PIN pairing (SPAKE2) success
-        r = handshake(ctx, "10.0.0.7", (in, out) -> Proto.clientPairPin(in, out, ctx.pin, VEC_FP, "Notebook", caps(Proto.CAP_CTL), new SecureRandom()));
+        r = handshake(ctx, "10.0.0.7", (in, out) -> Proto.clientPairPin(in, out, ctx.pin(), VEC_FP, "Notebook", caps(Proto.CAP_CTL), new SecureRandom()));
         check(r[0] instanceof Proto.AuthResult && r[1] instanceof Proto.ClientResult && ((Proto.ClientResult) r[1]).deviceKey != null, "pin pairing ok: " + r[1]);
         check(ctx.pinRotations.get() == 1, "pin rotated after successful pairing");
 
@@ -169,19 +184,72 @@ final class ProtoTest {
         check(r[1] instanceof Proto.ProtoException && r[0] instanceof Exception, "wrong pin rejected both sides");
 
         // MITM: client pinned a different fingerprint than the real board → client aborts
-        r = handshake(ctx, "10.0.0.9", (in, out) -> Proto.clientPairPin(in, out, ctx.pin, VEC_FP.replace('a', 'c'), "Oběť", caps(), new SecureRandom()));
+        r = handshake(ctx, "10.0.0.9", (in, out) -> Proto.clientPairPin(in, out, ctx.pin(), VEC_FP.replace('a', 'c'), "Oběť", caps(), new SecureRandom()));
         check(r[1] instanceof Proto.ProtoException && r[0] instanceof Exception, "fingerprint mismatch aborts pairing");
 
         // Lockout after repeated failures from one address
         for (int i = 0; i < 3; i++) {
             handshake(ctx, "10.0.0.66", (in, out) -> Proto.clientPairPin(in, out, "999999", VEC_FP, "x", caps(), new SecureRandom()));
         }
-        r = handshake(ctx, "10.0.0.66", (in, out) -> Proto.clientPairPin(in, out, ctx.pin, VEC_FP, "x", caps(), new SecureRandom()));
+        r = handshake(ctx, "10.0.0.66", (in, out) -> Proto.clientPairPin(in, out, ctx.pin(), VEC_FP, "x", caps(), new SecureRandom()));
         check(r[1] instanceof Proto.ProtoException && Proto.ERR_LOCKED.equals(((Proto.ProtoException) r[1]).code), "locked out after failures");
         // ...but another address is not affected
-        r = handshake(ctx, "10.0.0.67", (in, out) -> Proto.clientPairPin(in, out, ctx.pin, VEC_FP, "y", caps(), new SecureRandom()));
+        r = handshake(ctx, "10.0.0.67", (in, out) -> Proto.clientPairPin(in, out, ctx.pin(), VEC_FP, "y", caps(), new SecureRandom()));
         check(r[1] instanceof Proto.ClientResult, "other clients not locked out");
         ctx.now += AuthLimiter.MAX_LOCK_MS + 1;
+
+        // Race: two connections with the same one-time QR token at once → exactly one pairs (Codex review finding)
+        for (int round = 0; round < 8; round++) {
+            final String tok = ctx.token();
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            List<Future<Object[]>> fs = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                final String ip = "10.1." + round + "." + i;
+                fs.add(pool.submit(() -> handshake(ctx, ip, (in, out) -> Proto.clientHello(in, out,
+                    new Proto.Hello(Proto.METHOD_TOKEN, "-", tok, "Racer", caps(Proto.CAP_PAIR))))));
+            }
+            int ok = 0, rejected = 0;
+            for (Future<Object[]> f : fs) {
+                Object c = f.get(20, TimeUnit.SECONDS)[1];
+                if (c instanceof Proto.ClientResult) ok++;
+                else if (c instanceof Proto.ProtoException && Proto.ERR_AUTH.equals(((Proto.ProtoException) c).code)) rejected++;
+            }
+            pool.shutdownNow();
+            check(ok == 1 && rejected == 1, "racing QR token pairs once (round " + round + ": " + ok + " ok)");
+        }
+
+        // Race: two PIN pairings that both took the PIN before either finished → only the first one pairs
+        {
+            final String pinNow = ctx.pin();
+            int devicesBefore = ctx.reg.size();
+            ctx.randomCalls.set(0);
+            ctx.ticketBarrier = new CyclicBarrier(2);
+            ExecutorService pool = Executors.newFixedThreadPool(2);
+            List<Future<Object[]>> fs = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                final String ip = "10.2.0." + i;
+                fs.add(pool.submit(() -> handshake(ctx, ip, (in, out) -> Proto.clientPairPin(in, out, pinNow, VEC_FP, "Racer", caps(), new SecureRandom()))));
+            }
+            int ok = 0, reused = 0;
+            for (Future<Object[]> f : fs) {
+                Object c = f.get(30, TimeUnit.SECONDS)[1];
+                if (c instanceof Proto.ClientResult) ok++;
+                else if (c instanceof Proto.ProtoException && ((Proto.ProtoException) c).getMessage().contains("mezitím použit")) reused++;
+            }
+            pool.shutdownNow();
+            ctx.ticketBarrier = null;
+            check(ok == 1 && reused == 1, "racing PIN pairs once (" + ok + " ok, " + reused + " reused)");
+            check(ctx.reg.size() == devicesBefore + 1 && !ctx.pin().equals(pinNow), "one device issued, PIN rotated");
+        }
+
+        // PairingCredentials: a ticket is invalid after any rotation
+        PairingCredentials.PinTicket stale = ctx.creds.pinTicket();
+        ctx.creds.rotatePin();
+        check(!ctx.creds.consumePin(stale) && !ctx.creds.consumePin(null), "stale PIN ticket rejected");
+        PairingCredentials.PinTicket fresh = ctx.creds.pinTicket();
+        check(ctx.creds.consumePin(fresh) && !ctx.creds.consumePin(fresh), "PIN ticket consumed only once");
+        String t0 = ctx.creds.token();
+        check(ctx.creds.consumeToken(t0) && !ctx.creds.consumeToken(t0) && !ctx.creds.token().equals(t0), "token consumed only once");
 
         // Legacy v1 shared secret
         r = handshake(ctx, "10.0.0.10", (in, out) -> { Proto.clientLegacy(in, out, ctx.legacy); return "ok"; });
@@ -190,7 +258,7 @@ final class ProtoTest {
         check(r[1] instanceof IOException, "wrong legacy secret rejected");
 
         // Removed plain-PIN method of 0.5/0.6 Windows clients
-        r = handshake(ctx, "10.0.0.11", (in, out) -> { out.writeUTF("PIN:" + ctx.pin); out.flush(); return in.readInt(); });
+        r = handshake(ctx, "10.0.0.11", (in, out) -> { out.writeUTF("PIN:" + ctx.pin()); out.flush(); return in.readInt(); });
         check(r[1] instanceof EOFException && r[0] instanceof Proto.ProtoException, "plain PIN method removed");
 
         // Malformed v2 hello
@@ -205,7 +273,7 @@ final class ProtoTest {
             try (Socket c = new Socket(InetAddress.getLoopbackAddress(), ss.getLocalPort())) {
                 try {
                     res = Proto.clientHello(new DataInputStream(c.getInputStream()), new DataOutputStream(c.getOutputStream()),
-                        new Proto.Hello(Proto.METHOD_TOKEN, "-", ctx.token, "x", caps()));
+                        new Proto.Hello(Proto.METHOD_TOKEN, "-", ctx.token(), "x", caps()));
                 } catch (Exception e) { res = e; }
             }
             t.join(2000);

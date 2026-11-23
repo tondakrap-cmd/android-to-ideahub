@@ -65,7 +65,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
   - Protokol v2: `Proto`, `Spake2`, `DeviceRegistry`, `AuthLimiter`, `BoardStore`.
   - Přijímač: `ReceiverService`, `VideoSink`, `ReceiveActivity`.
   - Vysílač: `ShareService`, `ClientLink`, `MainActivity`.
-  - Přenosné testy: `tests/` (287 kontrol).
+  - Přenosné testy: `tests/` (300 kontrol).
 - `windows/`: Windows vysílač (C# 5 / .NET Framework 4.8 WinForms).
   - Protokol: `Protocol.cs`, `Proto2.cs`.
   - Relace: `TabuleSession.cs`.

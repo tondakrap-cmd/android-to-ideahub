@@ -12,7 +12,7 @@ out = root / 'build' / 'tests'
 out.mkdir(parents=True, exist_ok=True)
 jar = root / 'libs' / 'zxing-core-3.5.3.jar'
 portable = ['PairCode', 'Packet', 'TlsSupport', 'NetUtil', 'FrameQueue', 'AudioUtil', 'DiscoveryProtocol',
-            'Spake2', 'Proto', 'DeviceRegistry', 'AuthLimiter', 'BoardStore', 'VideoGeometry', 'DiscoveryClient']
+            'Spake2', 'Proto', 'DeviceRegistry', 'AuthLimiter', 'BoardStore', 'VideoGeometry', 'DiscoveryClient', 'PairingCredentials']
 sources = [root / 'src/cz/ideamirror/app' / (n + '.java') for n in portable]
 sources += [root / 'tests/cz/ideamirror/app/CoreTest.java', root / 'tests/cz/ideamirror/app/ProtoTest.java']
 subprocess.run([tool('javac'), '--release', '8', '-nowarn', '-encoding', 'UTF-8', '-cp', str(jar), '-d', str(out)] + [str(x) for x in sources], check=True)

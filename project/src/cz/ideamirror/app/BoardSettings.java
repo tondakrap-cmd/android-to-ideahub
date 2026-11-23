@@ -5,7 +5,6 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Locale;
 
 /** Board (receiver) settings and pairing credentials stored in private SharedPreferences. */
 final class BoardSettings {
@@ -80,29 +79,25 @@ final class BoardSettings {
         return s;
     }
 
-    synchronized String qrToken() {
-        String s = prefs.getString(K_TOKEN, null);
-        if (s == null || !Proto.isHex(s, 32)) s = rotateToken();
-        return s;
+    private PairingCredentials credentials;
+
+    /** One-time QR token and PIN (validation + rotation under one lock, see PairingCredentials). */
+    synchronized PairingCredentials credentials() {
+        if (credentials == null) {
+            credentials = new PairingCredentials(new PairingCredentials.Store() {
+                @Override public String loadToken() { return prefs.getString(K_TOKEN, null); }
+                @Override public void saveToken(String t) { prefs.edit().putString(K_TOKEN, t).apply(); }
+                @Override public String loadPin() { return prefs.getString(K_PIN, null); }
+                @Override public void savePin(String p) { prefs.edit().putString(K_PIN, p).apply(); }
+            }, Wire.RANDOM);
+        }
+        return credentials;
     }
 
-    synchronized String rotateToken() {
-        String s = Wire.token();
-        prefs.edit().putString(K_TOKEN, s).apply();
-        return s;
-    }
-
-    synchronized String pin() {
-        String s = prefs.getString(K_PIN, null);
-        if (s == null || !s.matches("[0-9]{6}")) s = rotatePin();
-        return s;
-    }
-
-    synchronized String rotatePin() {
-        String s = String.format(Locale.ROOT, "%06d", Wire.RANDOM.nextInt(1_000_000));
-        prefs.edit().putString(K_PIN, s).apply();
-        return s;
-    }
+    String qrToken() { return credentials().token(); }
+    String pin() { return credentials().pin(); }
+    String rotateToken() { return credentials().rotateToken(); }
+    String rotatePin() { return credentials().rotatePin(); }
 
     synchronized DeviceRegistry registry() {
         if (registry == null) registry = DeviceRegistry.decode(prefs.getString(K_DEVICES, ""));

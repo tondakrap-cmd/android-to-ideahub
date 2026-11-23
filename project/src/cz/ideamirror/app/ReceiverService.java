@@ -398,13 +398,12 @@ public class ReceiverService extends Service implements Proto.ServerContext, Vid
     @Override public String fingerprint() { Wire.Server s = server; return s == null ? "" : s.fp; }
     @Override public String boardName() { return settings.boardName(); }
     @Override public String legacySecret() { return settings.legacySecret(); }
-    @Override public String qrToken() { return settings.qrToken(); }
-    @Override public String pin() { return settings.pin(); }
+    @Override public PairingCredentials credentials() { return settings.credentials(); }
     @Override public DeviceRegistry registry() { return settings.registry(); }
     @Override public AuthLimiter limiter() { return limiter; }
     @Override public SecureRandom random() { return random; }
     @Override public long nowMs() { return System.currentTimeMillis(); }
-    @Override public void onTokenUsed() { settings.rotateToken(); notifyBoard(); }
+    @Override public void onCredentialsChanged() { notifyBoard(); }
     @Override public void onPinRotationNeeded() { settings.rotatePin(); limiter.onPinRotated(); notifyBoard(); }
     @Override public void onRegistryChanged() { settings.saveRegistry(); }
 

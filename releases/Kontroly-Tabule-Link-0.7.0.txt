@@ -7,12 +7,13 @@ Windows aplikace: TabuleLink-Windows-0.7.0.exe (C# 5 / .NET Framework 4.8, x64)
 Přehled změn: CHANGELOG.md
 
 Ověřeno automaticky
-- Přenosné Java testy (python project/test.py): PASS — 287 kontrol. Navíc oproti 0.6:
+- Přenosné Java testy (python project/test.py): PASS — 300 kontrol. Navíc oproti 0.6:
   SPAKE2 (shoda, špatný PIN, vazba na otisk certifikátu/MITM, neplatné prvky),
   handshake v2 přes skutečné TCP sockety (token z QR + rotace, klíč zařízení, odvolání,
   PIN párování + rotace PINu, špatný PIN, zámky pro každou adresu, starý klient 0.6,
   odmítnutí nešifrovaného PINu, poznání staré tabule), registr zařízení, úložiště tabulí,
-  geometrie, řídicí pakety, fronta snímků v2, LAN vyhledávání s pomalou tabulí.
+  geometrie, řídicí pakety, fronta snímků v2, LAN vyhledávání s pomalou tabulí,
+  souběžná párování stejným QR tokenem / PINem (spáruje se vždy jen jedno zařízení).
 - Windows testy (Test-Windows.ps1 na windows-latest v GitHub Actions): PASS — 123 kontrol,
   včetně společného testovacího vektoru SPAKE2 shodného s Javou bajt po bajtu.
 - Interoperabilita: Java tabule (Proto.serverAuthenticate) ↔ C# klient (Proto2.PairPin) přes

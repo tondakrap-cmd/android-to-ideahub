@@ -167,15 +167,15 @@ final class Proto {
         String fingerprint();
         String boardName();
         String legacySecret();
-        String qrToken();
-        String pin();
+        /** One-time QR token and PIN; checked and rotated atomically (no double pairing by racing connections). */
+        PairingCredentials credentials();
         DeviceRegistry registry();
         AuthLimiter limiter();
         SecureRandom random();
         long nowMs();
-        /** Called after a QR token was used successfully (board rotates it). */
-        void onTokenUsed();
-        /** Called after a PIN pairing succeeded or the PIN was attacked too often (board rotates it). */
+        /** QR token or PIN changed (consumed by a pairing) → the board refreshes its screen. */
+        void onCredentialsChanged();
+        /** The PIN was attacked too often (board rotates it). */
         void onPinRotationNeeded();
         void onRegistryChanged();
     }
@@ -256,21 +256,23 @@ final class Proto {
         }
 
         if (METHOD_TOKEN.equals(h.method)) {
-            if (!constEq(h.credential, ctx.qrToken())) {
+            // check + rotate under one lock: of several connections racing with the same token only one pairs
+            if (!ctx.credentials().consumeToken(h.credential)) {
                 if (limiter.recordFailure(remoteKey, now)) ctx.onPinRotationNeeded();
                 throw refuse(out, ERR_AUTH, "Tento QR kód už neplatí. Načtěte aktuální QR kód z tabule.");
             }
+            ctx.onCredentialsChanged();
             limiter.recordSuccess(remoteKey);
             String[] key = new String[1];
             DeviceRegistry.Device d = reg.issue(h.deviceName, ctx.random(), now, key);
-            ctx.onTokenUsed();
             ctx.onRegistryChanged();
             reply(out, ok(d.id, key[0], ctx.boardName(), SERVER_CAPS));
             return new AuthResult(false, d.id, d.name, h.caps, true);
         }
 
         // PAKE (6-digit PIN)
-        Spake2.Server s = new Spake2.Server(ctx.pin(), ctx.random());
+        PairingCredentials.PinTicket ticket = ctx.credentials().pinTicket();
+        Spake2.Server s = new Spake2.Server(ticket.pin, ctx.random());
         Spake2.Keys keys;
         try {
             keys = s.respond(h.credential, ctx.fingerprint());
@@ -289,9 +291,14 @@ final class Proto {
             if (!success && limiter.recordFailure(remoteKey, ctx.nowMs())) ctx.onPinRotationNeeded();
         }
         limiter.recordSuccess(remoteKey);
+        // The PIN was right, but it may have been consumed meanwhile by a concurrent pairing (or rotated):
+        // only the first pairing per PIN succeeds.
+        if (!ctx.credentials().consumePin(ticket)) {
+            throw refuse(out, ERR_AUTH, "Tento PIN už byl mezitím použit. Zadejte nový PIN zobrazený na tabuli.");
+        }
+        ctx.onCredentialsChanged();
         String[] key = new String[1];
         DeviceRegistry.Device d = reg.issue(h.deviceName, ctx.random(), now, key);
-        ctx.onPinRotationNeeded();
         ctx.onRegistryChanged();
         reply(out, ok(d.id, key[0], ctx.boardName(), SERVER_CAPS));
         return new AuthResult(false, d.id, d.name, h.caps, true);
