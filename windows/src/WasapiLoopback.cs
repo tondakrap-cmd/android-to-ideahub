@@ -132,7 +132,7 @@ namespace TabuleLinkWin
             }
 
             if (srcIsFloat && srcBits != 32) throw new NotSupportedException("Očekáván 32-bit float WASAPI mix formát.");
-            if (!srcIsFloat && srcBits != 16) throw new NotSupportedException("Očekáván 16-bit PCM WASAPI mix formát.");
+            if (!srcIsFloat && srcBits != 16 && srcBits != 24 && srcBits != 32) throw new NotSupportedException("Nepodporovaná bitová hloubka WASAPI PCM: " + srcBits);
 
             Guid sessionGuid = Guid.Empty;
             hr = audioClient.Initialize(ShareModeShared, StreamFlagLoopback, 500000L, 0L, mixFormatPtr, ref sessionGuid);
@@ -168,6 +168,7 @@ namespace TabuleLinkWin
             byte[] silenceBuf = new byte[silenceFrames * 4];
             byte[] convBuf = new byte[silenceFrames * 8];
             byte[] rawScratch = new byte[silenceFrames * srcChannels * (srcBits / 8) * 2];
+            System.Diagnostics.Stopwatch idleWatch = System.Diagnostics.Stopwatch.StartNew();
 
             try
             {
@@ -179,10 +180,15 @@ namespace TabuleLinkWin
 
                     if (packetFrames == 0)
                     {
-                        Thread.Sleep(15);
+                        Thread.Sleep(4);
                         if (!running) break;
-                        // Feed low-overhead silence so ffmpeg AAC encoder stays warm with zero start lag
-                        onPcm16Stereo(silenceBuf, silenceBuf.Length);
+                        // Only feed silence when Windows truly stopped producing audio (>80 ms idle),
+                        // NEVER inject silence between live 10 ms WASAPI packets!
+                        if (idleWatch.ElapsedMilliseconds >= 80)
+                        {
+                            onPcm16Stereo(silenceBuf, silenceBuf.Length);
+                            idleWatch.Restart();
+                        }
                         continue;
                     }
 
@@ -213,6 +219,7 @@ namespace TabuleLinkWin
                                 AudioUtil.ApplyGainPcm16Le(convBuf, outBytes, vol);
                             }
                             onPcm16Stereo(convBuf, outBytes);
+                            idleWatch.Restart();
                         }
                         finally
                         {
@@ -250,7 +257,7 @@ namespace TabuleLinkWin
                     dst[dstOff + 3] = (byte)((sr >> 8) & 0xFF);
                 }
             }
-            else
+            else if (srcBits == 16)
             {
                 int frameStride = ch * 2;
                 for (int f = 0; f < frames; f++)
@@ -268,6 +275,50 @@ namespace TabuleLinkWin
                     {
                         dst[dstOff + 2] = src[srcOff];
                         dst[dstOff + 3] = src[srcOff + 1];
+                    }
+                }
+            }
+            else if (srcBits == 24)
+            {
+                int frameStride = ch * 3;
+                for (int f = 0; f < frames; f++)
+                {
+                    int srcOff = f * frameStride;
+                    int dstOff = f * 4;
+                    // Top 16 bits of 24-bit signed LE sample
+                    dst[dstOff] = src[srcOff + 1];
+                    dst[dstOff + 1] = src[srcOff + 2];
+                    if (ch >= 2)
+                    {
+                        dst[dstOff + 2] = src[srcOff + 4];
+                        dst[dstOff + 3] = src[srcOff + 5];
+                    }
+                    else
+                    {
+                        dst[dstOff + 2] = src[srcOff + 1];
+                        dst[dstOff + 3] = src[srcOff + 2];
+                    }
+                }
+            }
+            else // 32-bit signed int PCM
+            {
+                int frameStride = ch * 4;
+                for (int f = 0; f < frames; f++)
+                {
+                    int srcOff = f * frameStride;
+                    int dstOff = f * 4;
+                    // Top 16 bits of 32-bit signed LE sample
+                    dst[dstOff] = src[srcOff + 2];
+                    dst[dstOff + 1] = src[srcOff + 3];
+                    if (ch >= 2)
+                    {
+                        dst[dstOff + 2] = src[srcOff + 6];
+                        dst[dstOff + 3] = src[srcOff + 7];
+                    }
+                    else
+                    {
+                        dst[dstOff + 2] = src[srcOff + 2];
+                        dst[dstOff + 3] = src[srcOff + 3];
                     }
                 }
             }

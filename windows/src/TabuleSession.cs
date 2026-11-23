@@ -529,7 +529,7 @@ namespace TabuleLinkWin
                 wasapi = new WasapiLoopback();
                 wasapi.Open();
                 string args = string.Format(CultureInfo.InvariantCulture,
-                    "-hide_banner -loglevel error -f s16le -ar {0} -ac 2 -i pipe:0 -ar 48000 -ac 2 -c:a aac -profile:a aac_low -b:a 128k -f adts pipe:1",
+                    "-hide_banner -loglevel error -f s16le -ar {0} -ac 2 -i pipe:0 -ar 48000 -ac 2 -c:a aac -profile:a aac_low -b:a 128k -flush_packets 1 -f adts pipe:1",
                     wasapi.SampleRate);
                 Process ap = StartHiddenProcess(ffmpegPath, args, true, true);
                 audioProc = ap;
@@ -571,7 +571,7 @@ namespace TabuleLinkWin
                     delegate(byte[] pcm, int len)
                     {
                         if (!running || queue.IsClosed) return;
-                        try { stdin.Write(pcm, 0, len); } catch { }
+                        try { stdin.Write(pcm, 0, len); stdin.Flush(); } catch { }
                     },
                     cfg.GetVolumePercent != null ? cfg.GetVolumePercent : (Func<int>)delegate() { return 70; },
                     delegate(Exception ex) { DiagAudio = "chyba zvuku: " + ex.Message; }

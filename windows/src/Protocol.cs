@@ -12,7 +12,7 @@ namespace TabuleLinkWin
 {
     public static class WireConstants
     {
-        public const string Version = "0.6.2";
+        public const string Version = "0.6.3";
         public const int Magic = 0x54424c31;
         public const int MagicPinOk = 0x54424c32;
         public const int DefaultPort = 42521;
