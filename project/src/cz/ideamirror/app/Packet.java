@@ -9,7 +9,9 @@ final class Packet {
     static final int FLAG_KEY_FRAME = 1;
     static final int FLAG_CODEC_CONFIG = 2;
     static final int FLAG_AUDIO = 16;
-    static final int VALID_WIRE_FLAGS = FLAG_KEY_FRAME | FLAG_CODEC_CONFIG | 4 | FLAG_AUDIO;
+    /** v2 (0.7+): payload is a short UTF-8 control command (pause, fmt:W:H, kf, touch, end:…), never sent to v1 peers. */
+    static final int FLAG_CONTROL = 32;
+    static final int VALID_WIRE_FLAGS = FLAG_KEY_FRAME | FLAG_CODEC_CONFIG | 4 | FLAG_AUDIO | FLAG_CONTROL;
     private static final byte[] HEARTBEAT_BYTES = new byte[HEADER_SIZE];
 
     final int flags;
@@ -23,6 +25,8 @@ final class Packet {
 
     static boolean isAudio(int flags) { return (flags & FLAG_AUDIO) != 0; }
     static boolean isConfig(int flags) { return (flags & FLAG_CODEC_CONFIG) != 0; }
+    static boolean isControl(int flags) { return (flags & FLAG_CONTROL) != 0; }
+    static boolean isKey(int flags) { return (flags & FLAG_KEY_FRAME) != 0; }
 
     static Packet read(DataInputStream in) throws IOException {
         int size = in.readInt(), flags = in.readInt();

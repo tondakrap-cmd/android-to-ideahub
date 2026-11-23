@@ -127,7 +127,7 @@ final class TlsSupport {
         byte[] sigAlg = derSeq(derOid(1, 2, 840, 10045, 4, 3, 2)); // ecdsa-with-SHA256 (no NULL per RFC 5758)
         byte[] name = derSeq(derSet(derSeq(derOid(2, 5, 4, 3), derUtf8("Tabule Link"))));
         long now = System.currentTimeMillis();
-        byte[] validity = derSeq(derTime(new Date(now - 86400000L)), derTime(new Date(now + 365L * 86400000L)));
+        byte[] validity = derSeq(derTime(new Date(now - 86400000L)), derTime(new Date(now + 30L * 365L * 86400000L)));
         byte[] spki = kp.getPublic().getEncoded();
 
         byte[] basicConstraints = derSeq(derOid(2, 5, 29, 19), derBool(true), derOctet(derSeq()));

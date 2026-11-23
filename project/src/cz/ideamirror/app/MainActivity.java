@@ -4,399 +4,440 @@ import android.Manifest;
 import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.graphics.Typeface;
-import android.media.projection.*;
-import android.net.Uri;
+import android.media.projection.MediaProjectionManager;
 import android.os.*;
-import android.provider.Settings;
 import android.text.InputType;
 import android.view.*;
 import android.widget.*;
 import java.util.*;
 
+/**
+ * Entry point. First run asks for the role of this device; boards go straight to the receive screen.
+ * Presenter screen: one tap "Sdílet" per saved board, add boards by QR / LAN+PIN / code, live card while sharing.
+ */
 public class MainActivity extends Activity {
-    private static final int CAMERA = 10, SCAN = 11, CAPTURE = 12, AUDIO_PERM = 13;
-    private static final String PREFS = "tabule_client";
-    private static final String KEY_SAVED_PAIRING = "saved_pairing";
-    private static final String KEY_SAVED_HOST = "saved_host";
-    private static final String KEY_QUALITY = "quality";
-    private static final String KEY_AUDIO = "audio";
-    private static final String KEY_AUDIO_VOL = "audio_vol";
+    private static final int SCAN = 11, CAPTURE = 12, PERMS = 13;
+    private static final String K_QUALITY = "quality", K_AUDIO = "audio", K_AUDIO_VOL = "audio_vol", K_ADV_OPEN = "advanced_open";
 
-    private String pairing;
-    private String pendingPairingAfterAudioPerm;
     private int quality = ShareService.QUALITY_BALANCED;
     private boolean audioEnabled = true;
-    private int audioVolume = 70;
-    private int lastNonZeroVolume = 70;
+    private int audioVolume = 70, lastNonZeroVolume = 70;
+    private String pendingShareFp;
 
-    private TextView status, statusPill, networkView, savedInfo, volumeLabel, alwaysOnStatus;
-    private LinearLayout savedBox;
-    private Button quickConnectBtn, qualityBtn, muteBtn, overlayPermBtn;
-    private Switch audioSwitch, alwaysOnSwitch, autoOpenBootSwitch;
+    private LinearLayout boardsList, liveCard, advancedBox;
+    private TextView statusPill, liveTitle, liveStatus, liveStats, volumeLabel;
+    private Button pauseBtn, liveMuteBtn, muteBtn, qualityBtn, advToggle;
     private SeekBar volumeSeek;
-    private int tickCount = 0;
+    private Switch audioSwitch;
+    private String lastBoardsSignature = "";
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private final Runnable tick = new Runnable() {
         public void run() {
-            status.setText(ShareService.status);
-            if (ShareService.active) {
-                statusPill.setText("● Vysílám živě");
-                statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.CARD_HI, Ui.ACCENT, 999));
-                statusPill.setTextColor(Ui.ACCENT);
-            } else if (ReceiverService.running) {
-                statusPill.setText("● Trvalý příjem");
-                statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.CARD_HI, Ui.CARD_HI_STROKE, 999));
-                statusPill.setTextColor(Ui.ACCENT);
-            } else {
-                statusPill.setText("● Připraveno");
-                statusPill.setBackground(Ui.rounded(MainActivity.this, Ui.PANEL, Ui.CARD_STROKE, 999));
-                statusPill.setTextColor(Ui.MUTED);
-            }
-            refreshAlwaysOnUi();
-            if (tickCount % 5 == 0) refreshNetworkInfo();
-            tickCount++;
+            renderLive();
+            String sig = ClientLink.prefs(MainActivity.this).getString("boards", "");
+            if (!sig.equals(lastBoardsSignature)) renderBoards();
             main.postDelayed(this, 1000);
         }
     };
 
-    private SharedPreferences prefs() { return getSharedPreferences(PREFS, MODE_PRIVATE); }
+    private SharedPreferences prefs() { return ClientLink.prefs(this); }
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         Ui.prepare(this);
-        if (b != null) pairing = b.getString("pairing");
+        String role = Ui.role(this);
+        if (role == null) {
+            // 0.6 boards had the always-on switch enabled — keep them on the board role after the update.
+            if (BoardSettings.isAlwaysOn(this)) { Ui.setRole(this, Ui.ROLE_BOARD); role = Ui.ROLE_BOARD; }
+        }
+        if (Ui.ROLE_BOARD.equals(role)) { openBoard(); return; }
+        if (role == null) { showRoleChooser(); return; }
+        buildSenderUi();
+    }
+
+    private void openBoard() {
+        startActivity(new Intent(this, ReceiveActivity.class));
+        finish();
+    }
+
+    // ------------------------------------------------------------------ role chooser
+
+    private void showRoleChooser() {
+        ScrollView sc = new ScrollView(this);
+        sc.setFillViewport(true);
+        LinearLayout root = Ui.column(this);
+        root.setGravity(Gravity.CENTER);
+        int pad = Ui.dp(this, 28);
+        root.setPadding(pad, pad, pad, pad);
+        sc.addView(root);
+        setContentView(sc);
+
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.icon);
+        root.addView(logo, new LinearLayout.LayoutParams(Ui.dp(this, 72), Ui.dp(this, 72)));
+        TextView t = Ui.text(this, "Vítejte v Tabule Link", 28);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setGravity(Gravity.CENTER);
+        root.addView(t, Ui.vSpace(this, 12, 4));
+        TextView st = Ui.muted(this, "Jak budete toto zařízení používat? Volbu lze později změnit.", 16);
+        st.setGravity(Gravity.CENTER);
+        root.addView(st, Ui.vSpace(this, 0, 22));
+
+        boolean bigScreen = getResources().getConfiguration().smallestScreenWidthDp >= 900;
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 700;
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        root.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        View board = roleCard("🖥  Tohle je TABULE", "Zobrazuje obraz z tabletů a notebooků (Huawei IdeaHub, TV, projektor).", bigScreen, () -> {
+            Ui.setRole(this, Ui.ROLE_BOARD);
+            openBoard();
+        });
+        View sender = roleCard("📱  Tohle zařízení VYSÍLÁ", "Sdílí svou obrazovku a zvuk na tabuli.", !bigScreen, () -> {
+            Ui.setRole(this, Ui.ROLE_SENDER);
+            buildSenderUi();
+        });
+        LinearLayout.LayoutParams lp1 = wide ? new LinearLayout.LayoutParams(0, -2, 1f) : new LinearLayout.LayoutParams(-1, -2);
+        LinearLayout.LayoutParams lp2 = wide ? new LinearLayout.LayoutParams(0, -2, 1f) : new LinearLayout.LayoutParams(-1, -2);
+        if (wide) lp1.setMargins(0, 0, Ui.dp(this, 10), 0); else lp1.setMargins(0, 0, 0, Ui.dp(this, 12));
+        row.addView(board, lp1);
+        row.addView(sender, lp2);
+    }
+
+    private View roleCard(String title, String desc, boolean recommended, Runnable click) {
+        LinearLayout c = Ui.card(this, recommended);
+        TextView t = Ui.text(this, title, 21);
+        t.setTypeface(null, Typeface.BOLD);
+        c.addView(t);
+        c.addView(Ui.muted(this, desc, 14));
+        if (recommended) c.addView(Ui.section(this, "DOPORUČENO PRO TOTO ZAŘÍZENÍ"), Ui.vSpace(this, 6, 0));
+        c.addView(recommended ? Ui.button(this, "Vybrat", click) : Ui.secondaryButton(this, "Vybrat", click), Ui.vSpace(this, 12, 0));
+        c.setOnClickListener(v -> click.run());
+        return c;
+    }
+
+    // ------------------------------------------------------------------ presenter UI
+
+    private void buildSenderUi() {
         SharedPreferences sp = prefs();
-        quality = sp.getInt(KEY_QUALITY, ShareService.QUALITY_BALANCED);
+        quality = sp.getInt(K_QUALITY, ShareService.QUALITY_BALANCED);
         if (quality < 0 || quality >= ShareService.QUALITY_LABELS.length) quality = ShareService.QUALITY_BALANCED;
-        audioEnabled = sp.getBoolean(KEY_AUDIO, true);
-        audioVolume = AudioUtil.clampPercent(sp.getInt(KEY_AUDIO_VOL, 70));
+        audioEnabled = sp.getBoolean(K_AUDIO, true);
+        audioVolume = AudioUtil.clampPercent(sp.getInt(K_AUDIO_VOL, 70));
         if (audioVolume > 0) lastNonZeroVolume = audioVolume;
         ShareService.audioVolumePercent = audioVolume;
 
         ScrollView sc = new ScrollView(this);
         sc.setFillViewport(true);
         LinearLayout root = Ui.column(this);
-        int pad = Ui.dp(this, 22);
-        root.setPadding(pad, Ui.dp(this, 18), pad, pad);
+        int pad = Ui.dp(this, 20);
+        root.setPadding(pad, Ui.dp(this, 16), pad, pad);
         sc.addView(root);
         setContentView(sc);
 
-        // Header bar
+        // Header
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
-        logo.setImageResource(cz.ideamirror.app.R.drawable.icon);
-        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(Ui.dp(this, 48), Ui.dp(this, 48));
-        logoLp.setMargins(0, 0, Ui.dp(this, 14), 0);
+        logo.setImageResource(R.drawable.icon);
+        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(Ui.dp(this, 44), Ui.dp(this, 44));
+        logoLp.setMargins(0, 0, Ui.dp(this, 12), 0);
         header.addView(logo, logoLp);
-
         LinearLayout titleCol = Ui.column(this);
-        TextView title = Ui.text(this, "Tabule Link", 28);
+        TextView title = Ui.text(this, "Tabule Link", 26);
         title.setTypeface(null, Typeface.BOLD);
         title.setPadding(0, 0, 0, 0);
         titleCol.addView(title);
-        TextView subtitle = Ui.muted(this, "Šifrované zrcadlení obrazu a zvuku v místní síti · TLS 1.2", 14);
+        TextView subtitle = Ui.muted(this, "Sdílení obrazovky a zvuku na tabuli · šifrováno", 13);
         subtitle.setPadding(0, 0, 0, 0);
         titleCol.addView(subtitle);
         header.addView(titleCol, new LinearLayout.LayoutParams(0, -2, 1f));
-
         statusPill = Ui.pill(this, "● Připraveno", Ui.PANEL, Ui.CARD_STROKE, Ui.MUTED);
-        LinearLayout.LayoutParams pillLp = new LinearLayout.LayoutParams(-2, -2);
-        pillLp.setMargins(Ui.dp(this, 8), 0, 0, 0);
-        header.addView(statusPill, pillLp);
-        root.addView(header, Ui.vSpace(this, 0, 16));
+        header.addView(statusPill);
+        Button menuBtn = Ui.secondaryButton(this, "⋮", null);
+        menuBtn.setOnClickListener(this::showMenu);
+        LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(-2, -2);
+        mLp.setMargins(Ui.dp(this, 8), 0, 0, 0);
+        header.addView(menuBtn, mLp);
+        root.addView(header, Ui.vSpace(this, 0, 14));
 
-        // Responsive two-column grid on tablets/boards
-        boolean wide = getResources().getConfiguration().screenWidthDp >= 680;
-        LinearLayout grid = new LinearLayout(this);
-        grid.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        root.addView(grid, Ui.vSpace(this, 0, 14));
-
-        // LEFT CARD: Receiver (Tabule) + Always-On / Boot mode + Network info
-        LinearLayout boardCard = Ui.card(this, false);
-        boardCard.addView(Ui.section(this, "1 · NA TABULI (PŘIJÍMAČ)"));
-        TextView boardTitle = Ui.text(this, "Zobrazit obraz z tabletu / notebooku", 19);
-        boardTitle.setTypeface(null, Typeface.BOLD);
-        boardCard.addView(boardTitle);
-        boardCard.addView(Ui.muted(this, "Podporuje více spárovaných uživatelů — další prezentující může kdykoli převzít obrazovku jedním kliknutím.", 14));
-        boardCard.addView(Ui.button(this, "Přijímat obraz a zvuk", () -> startActivity(new Intent(this, ReceiveActivity.class))), Ui.vSpace(this, 10, 12));
-
-        // Always-on receiver & start-on-boot box (ideal for IdeaHub board)
-        LinearLayout alwaysBox = Ui.subpanel(this);
-        alwaysBox.addView(Ui.section(this, "TRVALÝ PŘÍJEM A SPUŠTĚNÍ PO STARTU TABULE"));
-
-        LinearLayout aoRow = new LinearLayout(this);
-        aoRow.setOrientation(LinearLayout.HORIZONTAL);
-        aoRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout aoLabels = Ui.column(this);
-        TextView aoTitle = Ui.text(this, "Trvalý příjem na pozadí (i po startu)", 14);
-        aoTitle.setPadding(0, 0, 0, 0);
-        aoLabels.addView(aoTitle);
-        TextView aoSub = Ui.muted(this, "Tabule stále naslouchá a při připojení sama otevře obraz.", 12);
-        aoSub.setPadding(0, 0, 0, 0);
-        aoLabels.addView(aoSub);
-        aoRow.addView(aoLabels, new LinearLayout.LayoutParams(0, -2, 1f));
-        alwaysOnSwitch = new Switch(this);
-        alwaysOnSwitch.setChecked(ReceiverService.isAlwaysOnEnabled(this));
-        alwaysOnSwitch.setOnCheckedChangeListener((btn, checked) -> onAlwaysOnToggled(checked));
-        aoRow.addView(alwaysOnSwitch);
-        alwaysBox.addView(aoRow, Ui.vSpace(this, 0, 6));
-
-        LinearLayout bootRow = new LinearLayout(this);
-        bootRow.setOrientation(LinearLayout.HORIZONTAL);
-        bootRow.setGravity(Gravity.CENTER_VERTICAL);
-        TextView bootTitle = Ui.muted(this, "Po startu tabule rovnou otevřít obrazovku QR/PIN", 13);
-        bootTitle.setPadding(0, 0, 0, 0);
-        bootRow.addView(bootTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-        autoOpenBootSwitch = new Switch(this);
-        autoOpenBootSwitch.setChecked(ReceiverService.isAutoOpenOnBootEnabled(this));
-        autoOpenBootSwitch.setEnabled(alwaysOnSwitch.isChecked());
-        autoOpenBootSwitch.setOnCheckedChangeListener((btn, checked) -> ReceiverService.setAutoOpenOnBootEnabled(this, checked));
-        bootRow.addView(autoOpenBootSwitch);
-        alwaysBox.addView(bootRow, Ui.vSpace(this, 0, 6));
-
-        alwaysOnStatus = Ui.muted(this, "", 12);
-        alwaysBox.addView(alwaysOnStatus);
-
-        overlayPermBtn = Ui.secondaryButton(this, "Povolit vyskočení obrazu přes jiné aplikace", this::openOverlaySettings);
-        overlayPermBtn.setTextSize(13);
-        alwaysBox.addView(overlayPermBtn, Ui.vSpace(this, 4, 0));
-        boardCard.addView(alwaysBox, Ui.vSpace(this, 0, 12));
-
-        LinearLayout netBox = Ui.subpanel(this);
-        netBox.addView(Ui.section(this, "SÍŤ TOHOTO ZAŘÍZENÍ (KLEPNUTÍM OBNOVIT)"));
-        networkView = Ui.text(this, "Zjišťuji síťová rozhraní…", 13);
-        networkView.setTextIsSelectable(true);
-        netBox.addView(networkView);
-        netBox.setOnClickListener(v -> refreshNetworkInfo());
-        boardCard.addView(netBox);
-
-        LinearLayout.LayoutParams leftLp = wide
-            ? new LinearLayout.LayoutParams(0, -2, 1f)
-            : new LinearLayout.LayoutParams(-1, -2);
-        if (wide) leftLp.setMargins(0, 0, Ui.dp(this, 8), 0);
-        else leftLp.setMargins(0, 0, 0, Ui.dp(this, 14));
-        grid.addView(boardCard, leftLp);
-
-        // RIGHT CARD: Sender (Tablet) + Saved Quick Connect + Audio/Quality settings
-        LinearLayout tabletCard = Ui.card(this, false);
-        tabletCard.addView(Ui.section(this, "2 · NA TABLETU (VYSÍLAČ)"));
-        TextView tabTitle = Ui.text(this, "Sdílet obrazovku na tabuli", 19);
-        tabTitle.setTypeface(null, Typeface.BOLD);
-        tabletCard.addView(tabTitle);
-
-        // Saved connection quick-connect panel
-        savedBox = Ui.card(this, true);
-        int spPad = Ui.dp(this, 14);
-        savedBox.setPadding(spPad, spPad, spPad, spPad);
-        savedBox.addView(Ui.section(this, "ULOŽENÁ TABULE · BEZ QR KÓDU"));
-        savedInfo = Ui.muted(this, "", 13);
-        savedBox.addView(savedInfo);
-        LinearLayout savedBtns = new LinearLayout(this);
-        savedBtns.setOrientation(LinearLayout.HORIZONTAL);
-        quickConnectBtn = Ui.button(this, "⚡ Připojit k uložené tabuli", this::connectSaved);
-        Button forgetBtn = Ui.secondaryButton(this, "Zapomenout", this::forgetSaved);
-        LinearLayout.LayoutParams qcLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        qcLp.setMargins(0, 0, Ui.dp(this, 8), 0);
-        savedBtns.addView(quickConnectBtn, qcLp);
-        savedBtns.addView(forgetBtn, new LinearLayout.LayoutParams(-2, -2));
-        savedBox.addView(savedBtns, Ui.vSpace(this, 8, 0));
-        tabletCard.addView(savedBox, Ui.vSpace(this, 8, 10));
-
-        // QR / Manual pair buttons
-        LinearLayout pairRow = new LinearLayout(this);
-        pairRow.setOrientation(LinearLayout.HORIZONTAL);
-        Button scanBtn = Ui.button(this, "Načíst QR kód", this::scan);
-        Button manualBtn = Ui.secondaryButton(this, "Ruční kód", this::manual);
-        LinearLayout.LayoutParams prLeft = new LinearLayout.LayoutParams(0, -2, 1.3f);
-        prLeft.setMargins(0, 0, Ui.dp(this, 8), 0);
-        pairRow.addView(scanBtn, prLeft);
-        pairRow.addView(manualBtn, new LinearLayout.LayoutParams(0, -2, 1f));
-        tabletCard.addView(pairRow, Ui.vSpace(this, 4, 12));
-
-        // Audio + Quality settings box
-        LinearLayout settingsBox = Ui.subpanel(this);
-        settingsBox.addView(Ui.section(this, "NASTAVENÍ PŘENOSU"));
-
-        LinearLayout audioRow = new LinearLayout(this);
-        audioRow.setOrientation(LinearLayout.HORIZONTAL);
-        audioRow.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout audioLabels = Ui.column(this);
-        TextView audioTitle = Ui.text(this, "Přenášet zvuk aplikací", 15);
-        audioTitle.setPadding(0, 0, 0, 0);
-        audioLabels.addView(audioTitle);
-        TextView audioSub = Ui.muted(this, Build.VERSION.SDK_INT >= 29
-            ? "YouTube, videa, prezentace (AAC stereo)"
-            : "Vyžaduje Android 10 nebo novější", 12);
-        audioSub.setPadding(0, 0, 0, 0);
-        audioLabels.addView(audioSub);
-        audioRow.addView(audioLabels, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        audioSwitch = new Switch(this);
-        audioSwitch.setChecked(audioEnabled && Build.VERSION.SDK_INT >= 29);
-        audioSwitch.setEnabled(Build.VERSION.SDK_INT >= 29);
-        audioSwitch.setOnCheckedChangeListener((btn, checked) -> {
-            audioEnabled = checked;
-            prefs().edit().putBoolean(KEY_AUDIO, checked).apply();
-            updateVolumeControlsEnabled();
+        // Live card
+        liveCard = Ui.card(this, true);
+        liveCard.addView(Ui.section(this, "PRÁVĚ VYSÍLÁTE"));
+        liveTitle = Ui.text(this, "", 22);
+        liveTitle.setTypeface(null, Typeface.BOLD);
+        liveCard.addView(liveTitle);
+        liveStatus = Ui.text(this, "", 14);
+        liveStatus.setTextColor(Ui.ACCENT);
+        liveCard.addView(liveStatus);
+        liveStats = Ui.muted(this, "", 12);
+        liveCard.addView(liveStats);
+        LinearLayout liveBtns = new LinearLayout(this);
+        liveBtns.setOrientation(LinearLayout.HORIZONTAL);
+        pauseBtn = Ui.secondaryButton(this, "⏸ Pozastavit", () -> { ShareService.setPaused(!ShareService.paused); renderLive(); });
+        liveMuteBtn = Ui.secondaryButton(this, "🔇 Ztlumit", this::toggleMute);
+        Button stopBtn = Ui.dangerButton(this, "■ Ukončit", () -> {
+            stopService(new Intent(this, ShareService.class));
+            ShareService.status = "Vysílání ukončeno.";
+            renderLive();
         });
-        audioRow.addView(audioSwitch);
-        settingsBox.addView(audioRow, Ui.vSpace(this, 2, 8));
+        LinearLayout.LayoutParams third = new LinearLayout.LayoutParams(0, -2, 1f);
+        third.setMargins(0, 0, Ui.dp(this, 6), 0);
+        liveBtns.addView(pauseBtn, third);
+        liveBtns.addView(liveMuteBtn, new LinearLayout.LayoutParams(third));
+        liveBtns.addView(stopBtn, new LinearLayout.LayoutParams(0, -2, 1f));
+        liveCard.addView(liveBtns, Ui.vSpace(this, 10, 0));
+        root.addView(liveCard, Ui.vSpace(this, 0, 14));
 
-        // Live audio volume slider (sent to IdeaHub, does not change board's videoconferencing volume)
+        // Boards
+        LinearLayout boardsCard = Ui.card(this, false);
+        boardsCard.addView(Ui.section(this, "MOJE TABULE"));
+        boardsList = Ui.column(this);
+        boardsCard.addView(boardsList);
+        LinearLayout addRow = new LinearLayout(this);
+        boolean wide = getResources().getConfiguration().screenWidthDp >= 600;
+        addRow.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        Button scanBtn = Ui.button(this, "＋ Naskenovat QR kód", this::scan);
+        Button lanBtn = Ui.secondaryButton(this, "Najít v síti (PIN)", this::discoverAndPair);
+        Button codeBtn = Ui.secondaryButton(this, "Vložit kód", this::manual);
+        LinearLayout.LayoutParams a1 = wide ? new LinearLayout.LayoutParams(0, -2, 1.2f) : new LinearLayout.LayoutParams(-1, -2);
+        LinearLayout.LayoutParams a2 = wide ? new LinearLayout.LayoutParams(0, -2, 1f) : new LinearLayout.LayoutParams(-1, -2);
+        LinearLayout.LayoutParams a3 = wide ? new LinearLayout.LayoutParams(0, -2, 0.8f) : new LinearLayout.LayoutParams(-1, -2);
+        int g = Ui.dp(this, 6);
+        if (wide) { a1.setMargins(0, 0, g, 0); a2.setMargins(0, 0, g, 0); } else { a1.setMargins(0, 0, 0, g); a2.setMargins(0, 0, 0, g); }
+        addRow.addView(scanBtn, a1);
+        addRow.addView(lanBtn, a2);
+        addRow.addView(codeBtn, a3);
+        boardsCard.addView(addRow, Ui.vSpace(this, 10, 0));
+        root.addView(boardsCard, Ui.vSpace(this, 0, 14));
+
+        // Advanced
+        LinearLayout advCard = Ui.card(this, false);
+        advToggle = Ui.secondaryButton(this, "", this::toggleAdvanced);
+        advCard.addView(advToggle, new LinearLayout.LayoutParams(-1, -2));
+        advancedBox = Ui.column(this);
+        advCard.addView(advancedBox);
+        buildAdvanced();
+        root.addView(advCard, Ui.vSpace(this, 0, 14));
+        setAdvancedOpen(sp.getBoolean(K_ADV_OPEN, false));
+
+        TextView footer = Ui.muted(this, Ui.info() + "  ·  Chráněný DRM obsah může být bez obrazu/zvuku.", 12);
+        footer.setTextIsSelectable(true);
+        root.addView(footer);
+
+        renderBoards();
+        renderLive();
+        main.removeCallbacks(tick);
+        main.post(tick);
+    }
+
+    private void buildAdvanced() {
+        Ui.toggleRow(advancedBox, "Přenášet zvuk aplikací", Build.VERSION.SDK_INT >= 29 ? "YouTube, videa, prezentace (AAC stereo)" : "Vyžaduje Android 10 nebo novější",
+            audioEnabled && Build.VERSION.SDK_INT >= 29, (b, checked) -> {
+                audioEnabled = checked;
+                prefs().edit().putBoolean(K_AUDIO, checked).apply();
+                updateVolumeControlsEnabled();
+            });
         LinearLayout volHeader = new LinearLayout(this);
         volHeader.setOrientation(LinearLayout.HORIZONTAL);
         volHeader.setGravity(Gravity.CENTER_VERTICAL);
-        volumeLabel = Ui.text(this, "Hlasitost zvuku na tabuli: " + audioVolume + " %", 14);
-        volumeLabel.setPadding(0, 0, 0, 0);
+        volumeLabel = Ui.text(this, "", 14);
         volHeader.addView(volumeLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        muteBtn = Ui.secondaryButton(this, audioVolume == 0 ? "Obnovit zvuk" : "Ztlumit", this::toggleMute);
-        muteBtn.setMinHeight(Ui.dp(this, 36));
-        muteBtn.setMinimumHeight(Ui.dp(this, 36));
-        muteBtn.setPadding(Ui.dp(this, 12), Ui.dp(this, 4), Ui.dp(this, 12), Ui.dp(this, 4));
+        muteBtn = Ui.secondaryButton(this, "", this::toggleMute);
         muteBtn.setTextSize(13);
         volHeader.addView(muteBtn);
-        settingsBox.addView(volHeader, Ui.vSpace(this, 2, 2));
-
+        advancedBox.addView(volHeader);
         volumeSeek = new SeekBar(this);
         volumeSeek.setMax(100);
         volumeSeek.setProgress(audioVolume);
         volumeSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
-                audioVolume = AudioUtil.clampPercent(progress);
-                if (audioVolume > 0) lastNonZeroVolume = audioVolume;
-                ShareService.audioVolumePercent = audioVolume;
-                volumeLabel.setText("Hlasitost zvuku na tabuli: " + audioVolume + " %");
-                muteBtn.setText(audioVolume == 0 ? "Obnovit zvuk" : "Ztlumit");
+                if (!fromUser) return;
+                setVolume(progress, false);
             }
             @Override public void onStartTrackingTouch(SeekBar sb) {}
-            @Override public void onStopTrackingTouch(SeekBar sb) {
-                prefs().edit().putInt(KEY_AUDIO_VOL, audioVolume).apply();
-            }
+            @Override public void onStopTrackingTouch(SeekBar sb) { prefs().edit().putInt(K_AUDIO_VOL, audioVolume).apply(); }
         });
-        settingsBox.addView(volumeSeek, Ui.vSpace(this, 0, 2));
-        settingsBox.addView(Ui.muted(this, "Funguje i za běhu vysílání. Nemění hlasitost videokonference tabule.", 12), Ui.vSpace(this, 0, 10));
-        updateVolumeControlsEnabled();
-
+        advancedBox.addView(volumeSeek);
+        advancedBox.addView(Ui.muted(this, "Funguje i za běhu. Nemění hlasitost videokonference tabule.", 12), Ui.vSpace(this, 0, 10));
         qualityBtn = Ui.secondaryButton(this, "Režim obrazu: " + ShareService.QUALITY_LABELS[quality], this::chooseQuality);
-        settingsBox.addView(qualityBtn, new LinearLayout.LayoutParams(-1, -2));
-        tabletCard.addView(settingsBox);
-
-        LinearLayout.LayoutParams rightLp = wide
-            ? new LinearLayout.LayoutParams(0, -2, 1f)
-            : new LinearLayout.LayoutParams(-1, -2);
-        if (wide) rightLp.setMargins(Ui.dp(this, 8), 0, 0, 0);
-        grid.addView(tabletCard, rightLp);
-
-        // BOTTOM STATUS & WINDOW CONTROLS CARD
-        LinearLayout controlCard = Ui.card(this, false);
-        controlCard.addView(Ui.section(this, "STAV A OVLÁDÁNÍ"));
-        status = Ui.text(this, ShareService.status, 15);
-        status.setTextColor(Ui.ACCENT);
-        status.setTextIsSelectable(true);
-        controlCard.addView(status, Ui.vSpace(this, 0, 10));
-
-        LinearLayout windowActions = new LinearLayout(this);
-        windowActions.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams act1 = new LinearLayout.LayoutParams(0, -2, 1f);
-        act1.setMargins(0, 0, Ui.dp(this, 6), 0);
-        LinearLayout.LayoutParams act2 = new LinearLayout.LayoutParams(0, -2, 1f);
-        act2.setMargins(Ui.dp(this, 6), 0, Ui.dp(this, 6), 0);
-        LinearLayout.LayoutParams act3 = new LinearLayout.LayoutParams(0, -2, 1f);
-        act3.setMargins(Ui.dp(this, 6), 0, 0, 0);
-
-        windowActions.addView(Ui.dangerButton(this, "Ukončit vysílání", () -> {
-            stopService(new Intent(this, ShareService.class));
-            ShareService.status = "Vysílání ukončeno.";
-            status.setText(ShareService.status);
-        }), act1);
-        windowActions.addView(Ui.secondaryButton(this, "Uklidit do pozadí", () -> moveTaskToBack(true)), act2);
-        windowActions.addView(Ui.secondaryButton(this, "Ukončit aplikaci", () -> {
-            stopService(new Intent(this, ShareService.class));
-            stopService(new Intent(this, ReceiverService.class));
-            ShareService.status = "Vysílání ukončeno.";
-            finishAndRemoveTask();
-        }), act3);
-        controlCard.addView(windowActions);
-        root.addView(controlCard, Ui.vSpace(this, 0, 12));
-
-        // Footer row
-        LinearLayout footer = new LinearLayout(this);
-        footer.setOrientation(wide ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        footer.setGravity(Gravity.CENTER_VERTICAL);
-        TextView device = Ui.muted(this, Ui.info() + "  ·  Chráněný DRM obsah může být bez obrazu/zvuku.", 12);
-        device.setTextIsSelectable(true);
-        footer.addView(device, wide ? new LinearLayout.LayoutParams(0, -2, 1f) : new LinearLayout.LayoutParams(-1, -2));
-
-        LinearLayout footerBtns = new LinearLayout(this);
-        footerBtns.setOrientation(LinearLayout.HORIZONTAL);
-        Button diagBtn = Ui.secondaryButton(this, "Diagnostika", () -> {
-            String localNets = Wire.formatEndpointsInline(Wire.endpoints(this));
-            Ui.copy(this, "Diagnostika", Ui.info() + "\nSíť zařízení: " + localNets + "\n" + ShareService.diagnostics());
-        });
-        Button licBtn = Ui.secondaryButton(this, "Licence", this::showLicenses);
-        LinearLayout.LayoutParams fb1 = new LinearLayout.LayoutParams(-2, -2);
-        fb1.setMargins(wide ? Ui.dp(this, 10) : 0, wide ? 0 : Ui.dp(this, 8), Ui.dp(this, 8), 0);
-        LinearLayout.LayoutParams fb2 = new LinearLayout.LayoutParams(-2, -2);
-        fb2.setMargins(0, wide ? 0 : Ui.dp(this, 8), 0, 0);
-        footerBtns.addView(diagBtn, fb1);
-        footerBtns.addView(licBtn, fb2);
-        footer.addView(footerBtns);
-        root.addView(footer);
-
-        refreshSavedUi();
-        refreshAlwaysOnUi();
-        refreshNetworkInfo();
-        if (ReceiverService.isAlwaysOnEnabled(this) && !ReceiverService.running) {
-            try {
-                startForegroundService(new Intent(this, ReceiverService.class).setAction(ReceiverService.ACTION_START_ALWAYS_ON));
-            } catch (Exception ignored) {}
-        }
+        advancedBox.addView(qualityBtn, new LinearLayout.LayoutParams(-1, -2));
+        setVolume(audioVolume, false);
+        updateVolumeControlsEnabled();
     }
 
-    private void onAlwaysOnToggled(boolean enabled) {
-        ReceiverService.setAlwaysOnEnabled(this, enabled);
-        autoOpenBootSwitch.setEnabled(enabled);
-        if (enabled) {
-            try {
-                startForegroundService(new Intent(this, ReceiverService.class).setAction(ReceiverService.ACTION_START_ALWAYS_ON));
-            } catch (Exception e) {
-                Ui.error(this, Ui.problem(e));
+    private void toggleAdvanced() { setAdvancedOpen(advancedBox.getVisibility() != View.VISIBLE); }
+
+    private void setAdvancedOpen(boolean open) {
+        advancedBox.setVisibility(open ? View.VISIBLE : View.GONE);
+        advToggle.setText((open ? "▾" : "▸") + "  Nastavení přenosu (zvuk, hlasitost, kvalita)");
+        prefs().edit().putBoolean(K_ADV_OPEN, open).apply();
+    }
+
+    private void showMenu(View anchor) {
+        PopupMenu pm = new PopupMenu(this, anchor);
+        pm.getMenu().add(0, 1, 0, "Jméno tohoto zařízení…");
+        pm.getMenu().add(0, 2, 1, "Zkopírovat diagnostiku");
+        pm.getMenu().add(0, 3, 2, "Licence");
+        pm.getMenu().add(0, 4, 3, "Přepnout na roli TABULE");
+        pm.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1: editDeviceName(); return true;
+                case 2:
+                    Ui.copy(this, "Diagnostika", Ui.info() + "\nRole: vysílač · jméno: " + ClientLink.deviceName(this)
+                        + "\nSíť zařízení: " + Wire.formatEndpointsInline(Wire.endpoints(this)) + "\n" + ShareService.diagnostics());
+                    return true;
+                case 3: showLicenses(); return true;
+                case 4:
+                    Ui.setRole(this, Ui.ROLE_BOARD);
+                    stopService(new Intent(this, ShareService.class));
+                    openBoard();
+                    return true;
             }
-        } else {
-            stopService(new Intent(this, ReceiverService.class));
-        }
-        refreshAlwaysOnUi();
+            return false;
+        });
+        pm.show();
     }
 
-    private void openOverlaySettings() {
-        try {
-            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName()));
-            startActivity(intent);
-        } catch (Exception e) {
-            Ui.error(this, "Otevřete v nastavení tabule oprávnění „Zobrazovat přes jiné aplikace“ pro Tabule Link.");
+    private void editDeviceName() {
+        EditText e = new EditText(this);
+        e.setText(ClientLink.deviceName(this));
+        e.setSingleLine(true);
+        new AlertDialog.Builder(this)
+            .setTitle("Jméno tohoto zařízení")
+            .setMessage("Zobrazí se na tabuli při prezentaci a v seznamu spárovaných zařízení.")
+            .setView(e)
+            .setPositiveButton("Uložit", (d, w) -> ClientLink.setDeviceName(this, e.getText().toString()))
+            .setNegativeButton("Zrušit", null)
+            .show();
+    }
+
+    private void renderBoards() {
+        if (boardsList == null) return;
+        lastBoardsSignature = prefs().getString("boards", "");
+        boardsList.removeAllViews();
+        List<BoardStore.Board> boards = ClientLink.load(this).list();
+        if (boards.isEmpty()) {
+            boardsList.addView(Ui.muted(this, "Zatím žádná tabule. Naskenujte QR kód z tabule, nebo ji najděte v síti a zadejte PIN.", 14));
+            return;
+        }
+        for (BoardStore.Board b : boards) {
+            LinearLayout row = Ui.subpanel(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout labels = Ui.column(this);
+            TextView n = Ui.text(this, b.name, 17);
+            n.setTypeface(null, Typeface.BOLD);
+            n.setPadding(0, 0, 0, 0);
+            labels.addView(n);
+            TextView sub = Ui.muted(this, b.address() + (b.hasV2Key() ? "" : " · starší spárování (0.6)"), 12);
+            sub.setPadding(0, 0, 0, 0);
+            labels.addView(sub);
+            row.addView(labels, new LinearLayout.LayoutParams(0, -2, 1f));
+            Button share = Ui.button(this, "Sdílet", () -> startShare(b.fp));
+            row.addView(share);
+            Button more = Ui.secondaryButton(this, "⋯", null);
+            more.setOnClickListener(v -> boardMenu(v, b));
+            LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(-2, -2);
+            mlp.setMargins(Ui.dp(this, 6), 0, 0, 0);
+            row.addView(more, mlp);
+            boardsList.addView(row, Ui.vSpace(this, 0, 8));
         }
     }
 
-    private void refreshAlwaysOnUi() {
-        boolean enabled = ReceiverService.isAlwaysOnEnabled(this);
-        boolean active = ReceiverService.running;
-        if (enabled && active) {
-            alwaysOnStatus.setTextColor(Ui.ACCENT);
-            alwaysOnStatus.setText("● Aktivní na pozadí — tabule je připravena přijmout sdílení kdykoli.");
-        } else if (enabled) {
-            alwaysOnStatus.setTextColor(Ui.MUTED);
-            alwaysOnStatus.setText("Spouštím službu trvalého příjmu…");
+    private void boardMenu(View anchor, BoardStore.Board b) {
+        PopupMenu pm = new PopupMenu(this, anchor);
+        pm.getMenu().add(0, 1, 0, "Přejmenovat");
+        pm.getMenu().add(0, 2, 1, "Odebrat");
+        pm.setOnMenuItemClickListener(item -> {
+            if (item.getItemId() == 1) {
+                EditText e = new EditText(this);
+                e.setText(b.name);
+                e.setSingleLine(true);
+                new AlertDialog.Builder(this).setTitle("Název tabule").setView(e)
+                    .setPositiveButton("Uložit", (d, w) -> {
+                        BoardStore.Board c = ClientLink.load(this).find(b.fp);
+                        if (c != null) { c.name = Proto.sanitize(e.getText().toString(), 64, c.name); ClientLink.save(this, c); renderBoards(); }
+                    })
+                    .setNegativeButton("Zrušit", null).show();
+            } else {
+                new AlertDialog.Builder(this).setTitle("Odebrat „" + b.name + "“?")
+                    .setMessage("Pro další sdílení bude nutné tabuli znovu spárovat.")
+                    .setPositiveButton("Odebrat", (d, w) -> { ClientLink.remove(this, b.fp); renderBoards(); })
+                    .setNegativeButton("Zrušit", null).show();
+            }
+            return true;
+        });
+        pm.show();
+    }
+
+    private void renderLive() {
+        if (liveCard == null) return;
+        boolean live = ShareService.active;
+        liveCard.setVisibility(live ? View.VISIBLE : View.GONE);
+        if (live) {
+            liveTitle.setText("Vysíláte na: " + (ShareService.targetName.isEmpty() ? "tabuli" : ShareService.targetName));
+            liveStatus.setText(ShareService.status);
+            liveStats.setText(ShareService.liveStats());
+            pauseBtn.setText(ShareService.paused ? "▶ Pokračovat" : "⏸ Pozastavit");
+            liveMuteBtn.setText(audioVolume == 0 ? "🔊 Zvuk" : "🔇 Ztlumit");
+            statusPill.setText(ShareService.reconnecting ? "● Obnovuji…" : (ShareService.paused ? "● Pozastaveno" : "● Vysílám živě"));
+            statusPill.setBackground(Ui.rounded(this, Ui.CARD_HI, Ui.ACCENT, 999));
+            statusPill.setTextColor(Ui.ACCENT);
         } else {
-            alwaysOnStatus.setTextColor(Ui.MUTED);
-            alwaysOnStatus.setText("Vypnuto (doporučeno nechat vypnuté na tabletu).");
+            statusPill.setText("● Připraveno");
+            statusPill.setBackground(Ui.rounded(this, Ui.PANEL, Ui.CARD_STROKE, 999));
+            statusPill.setTextColor(Ui.MUTED);
+            String st = ShareService.status;
+            if (st != null && !st.startsWith("Připraveno") && !st.equals(lastShownStatus)) {
+                lastShownStatus = st;
+                if (!st.equals("Vysílání ukončeno.")) Toast.makeText(this, st, Toast.LENGTH_LONG).show();
+            }
         }
-        boolean needsOverlay = enabled && Build.VERSION.SDK_INT >= 29 && !Settings.canDrawOverlays(this);
-        overlayPermBtn.setVisibility(needsOverlay ? View.VISIBLE : View.GONE);
+    }
+
+    private String lastShownStatus = "Připraveno k připojení.";
+
+    // ------------------------------------------------------------------ audio / quality
+
+    private void setVolume(int v, boolean persist) {
+        audioVolume = AudioUtil.clampPercent(v);
+        if (audioVolume > 0) lastNonZeroVolume = audioVolume;
+        ShareService.audioVolumePercent = audioVolume;
+        if (volumeLabel != null) volumeLabel.setText("Hlasitost zvuku na tabuli: " + audioVolume + " %");
+        if (muteBtn != null) muteBtn.setText(audioVolume == 0 ? "Obnovit zvuk" : "Ztlumit");
+        if (volumeSeek != null && volumeSeek.getProgress() != audioVolume) volumeSeek.setProgress(audioVolume);
+        if (persist) prefs().edit().putInt(K_AUDIO_VOL, audioVolume).apply();
+    }
+
+    private void toggleMute() {
+        setVolume(audioVolume == 0 ? Math.max(20, lastNonZeroVolume) : 0, true);
+        renderLive();
+    }
+
+    private void updateVolumeControlsEnabled() {
+        boolean on = audioEnabled && Build.VERSION.SDK_INT >= 29;
+        float alpha = on ? 1f : 0.45f;
+        volumeSeek.setEnabled(on);
+        muteBtn.setEnabled(on);
+        volumeLabel.setAlpha(alpha);
+        volumeSeek.setAlpha(alpha);
+        muteBtn.setAlpha(alpha);
+    }
+
+    private void chooseQuality() {
+        new AlertDialog.Builder(this)
+            .setTitle("Režim kvality a odezvy")
+            .setSingleChoiceItems(ShareService.QUALITY_LABELS, quality, (d, which) -> {
+                quality = which;
+                prefs().edit().putInt(K_QUALITY, quality).apply();
+                qualityBtn.setText("Režim obrazu: " + ShareService.QUALITY_LABELS[quality]);
+                d.dismiss();
+            })
+            .setNegativeButton("Zavřít", null)
+            .show();
     }
 
     private void showLicenses() {
@@ -411,92 +452,66 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Zavřít", null)
                 .show();
         } catch (Exception e) {
-            Ui.error(this, Ui.problem(e));
+            Ui.message(this, "Licence", Ui.problem(e), null);
         }
     }
 
-    private void refreshSavedUi() {
-        String saved = prefs().getString(KEY_SAVED_PAIRING, null);
-        String host = prefs().getString(KEY_SAVED_HOST, null);
-        if (saved != null && host != null) {
-            savedBox.setVisibility(View.VISIBLE);
-            savedInfo.setText("Poslední spárovaná tabule: " + host);
-            quickConnectBtn.setText("⚡ Připojit (" + host + ")");
-        } else {
-            savedBox.setVisibility(View.GONE);
+    // ------------------------------------------------------------------ pairing
+
+    private interface Job { BoardStore.Board run(Wire.PhaseListener phase) throws Exception; }
+
+    /** Runs a pairing job in the background with a progress dialog, then starts sharing to the paired board. */
+    private void runPairing(String title, Job job) {
+        ProgressBar pb = new ProgressBar(this);
+        TextView msg = Ui.muted(this, "Připojuji se…", 14);
+        LinearLayout box = Ui.column(this);
+        int p = Ui.dp(this, 20);
+        box.setPadding(p, p, p, p);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.addView(pb);
+        box.addView(msg, Ui.vSpace(this, 10, 0));
+        AlertDialog dlg = new AlertDialog.Builder(this).setTitle(title).setView(box).setCancelable(false).show();
+        new Thread(() -> {
+            try {
+                BoardStore.Board b = job.run(phase -> runOnUiThread(() -> msg.setText(phase + "…")));
+                runOnUiThread(() -> {
+                    dlg.dismiss();
+                    renderBoards();
+                    Toast.makeText(this, "Spárováno: " + b.name, Toast.LENGTH_SHORT).show();
+                    startShare(b.fp);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    dlg.dismiss();
+                    Ui.error(this, e instanceof Proto.ProtoException ? e.getMessage() : Ui.problem(e));
+                });
+            }
+        }, "tabule-pair").start();
+    }
+
+    private void pairCode(String text) {
+        final PairCode code;
+        try {
+            code = new PairCode(text);
+        } catch (Exception e) {
+            Ui.error(this, e.getMessage());
+            return;
         }
-    }
-
-    private void savePairing(String code, Wire.Pair pair) {
-        prefs().edit()
-            .putString(KEY_SAVED_PAIRING, code.trim())
-            .putString(KEY_SAVED_HOST, pair.host + ":" + pair.port)
-            .apply();
-        refreshSavedUi();
-    }
-
-    private void connectSaved() {
-        String saved = prefs().getString(KEY_SAVED_PAIRING, null);
-        if (saved == null) { refreshSavedUi(); return; }
-        begin(saved);
-    }
-
-    private void forgetSaved() {
-        prefs().edit().remove(KEY_SAVED_PAIRING).remove(KEY_SAVED_HOST).apply();
-        refreshSavedUi();
-        Toast.makeText(this, "Uložené spojení bylo odstraněno.", Toast.LENGTH_SHORT).show();
-    }
-
-    private void updateVolumeControlsEnabled() {
-        boolean on = audioEnabled && Build.VERSION.SDK_INT >= 29;
-        volumeSeek.setEnabled(on);
-        muteBtn.setEnabled(on);
-        float alpha = on ? 1f : 0.45f;
-        volumeLabel.setAlpha(alpha);
-        volumeSeek.setAlpha(alpha);
-        muteBtn.setAlpha(alpha);
-    }
-
-    private void toggleMute() {
-        int next = audioVolume == 0 ? Math.max(20, lastNonZeroVolume) : 0;
-        audioVolume = next;
-        ShareService.audioVolumePercent = next;
-        volumeSeek.setProgress(next);
-        volumeLabel.setText("Hlasitost zvuku na tabuli: " + next + " %");
-        muteBtn.setText(next == 0 ? "Obnovit zvuk" : "Ztlumit");
-        prefs().edit().putInt(KEY_AUDIO_VOL, next).apply();
-    }
-
-    private void chooseQuality() {
-        new AlertDialog.Builder(this)
-            .setTitle("Režim kvality a odezvy")
-            .setSingleChoiceItems(ShareService.QUALITY_LABELS, quality, (d, which) -> {
-                quality = which;
-                prefs().edit().putInt(KEY_QUALITY, quality).apply();
-                qualityBtn.setText("Režim obrazu: " + ShareService.QUALITY_LABELS[quality]);
-                d.dismiss();
-            })
-            .setNegativeButton("Zavřít", null)
-            .show();
-    }
-
-    private void refreshNetworkInfo() {
-        List<Wire.Endpoint> eps = Wire.endpoints(this);
-        networkView.setText(Wire.formatEndpointsMultiline(eps));
+        String hint = Wire.subnetMismatchHint(this, code.host);
+        runPairing("Párování s tabulí", phase -> {
+            try {
+                return ClientLink.pairWithCode(this, code, phase);
+            } catch (Exception e) {
+                if (hint != null && !(e instanceof Proto.ProtoException)) throw new Exception(Ui.problem(e) + "\n" + hint);
+                throw e;
+            }
+        });
     }
 
     void scan() {
         if (ShareService.active) { Ui.error(this, "Nejprve ukončete současné vysílání."); return; }
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            List<String> perms = new ArrayList<>();
-            perms.add(Manifest.permission.CAMERA);
-            if (audioEnabled && Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.RECORD_AUDIO);
-            }
-            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                perms.add(Manifest.permission.POST_NOTIFICATIONS);
-            }
-            requestPermissions(perms.toArray(new String[0]), CAMERA);
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, SCAN);
         } else {
             startActivityForResult(new Intent(this, ScanActivity.class), SCAN);
         }
@@ -508,68 +523,107 @@ public class MainActivity extends Activity {
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         new AlertDialog.Builder(this)
             .setTitle("Párovací kód z tabule")
+            .setMessage("Na tabuli: ⚙ Správa → Ruční kód.")
             .setView(e)
-            .setPositiveButton("Připojit", (d, w) -> begin(e.getText().toString()))
+            .setPositiveButton("Spárovat", (d, w) -> pairCode(e.getText().toString()))
             .setNegativeButton("Zrušit", null)
             .show();
     }
 
-    void begin(String code) {
+    private void discoverAndPair() {
         if (ShareService.active) { Ui.error(this, "Nejprve ukončete současné vysílání."); return; }
-        try {
-            Wire.Pair pair = new Wire.Pair(code);
-            savePairing(code, pair);
-            if (audioEnabled && Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                pendingPairingAfterAudioPerm = code;
-                List<String> perms = new ArrayList<>();
-                perms.add(Manifest.permission.RECORD_AUDIO);
-                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    perms.add(Manifest.permission.POST_NOTIFICATIONS);
+        ProgressBar pb = new ProgressBar(this);
+        AlertDialog searching = new AlertDialog.Builder(this).setTitle("Hledám tabule v síti…").setView(pb).setCancelable(true).show();
+        new Thread(() -> {
+            List<DiscoveryProtocol.Offer> offers = DiscoveryClient.discover(1800);
+            runOnUiThread(() -> {
+                if (!searching.isShowing()) return;
+                searching.dismiss();
+                if (offers.isEmpty()) {
+                    Ui.message(this, "Žádná tabule nenalezena",
+                        "Ověřte, že je tabule ve stejné síti a má otevřený Tabule Link 0.7 (nebo zapnutý trvalý příjem). Případně naskenujte QR kód.", null);
+                    return;
                 }
-                requestPermissions(perms.toArray(new String[0]), AUDIO_PERM);
-                return;
-            }
-            launchScreenCapture(code);
-        } catch (Exception e) {
-            Ui.error(this, Ui.problem(e));
-        }
+                String[] labels = new String[offers.size()];
+                for (int i = 0; i < offers.size(); i++) labels[i] = offers.get(i).name + "  (" + offers.get(i).ip + ")";
+                new AlertDialog.Builder(this)
+                    .setTitle("Vyberte tabuli")
+                    .setItems(labels, (d, w) -> askPin(offers.get(w)))
+                    .setNegativeButton("Zrušit", null)
+                    .show();
+            });
+        }, "tabule-discover").start();
     }
 
-    private void launchScreenCapture(String code) {
-        pairing = code;
+    private void askPin(DiscoveryProtocol.Offer offer) {
+        BoardStore.Board known = ClientLink.load(this).find(offer.fp);
+        if (known != null && known.hasV2Key()) {
+            if (!known.host.equals(offer.ip) || known.port != offer.port) { known.host = offer.ip; known.port = offer.port; ClientLink.save(this, known); }
+            startShare(known.fp);
+            return;
+        }
+        EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER);
+        e.setHint("6místný PIN z tabule");
+        e.setTextSize(24);
+        new AlertDialog.Builder(this)
+            .setTitle(offer.name)
+            .setMessage("Zadejte PIN zobrazený na tabuli.")
+            .setView(e)
+            .setPositiveButton("Spárovat", (d, w) -> {
+                String pin = DiscoveryProtocol.normalizePin(e.getText().toString());
+                if (pin == null) { Ui.error(this, "PIN musí mít 6 číslic."); return; }
+                runPairing("Párování PINem", phase -> ClientLink.pairWithPin(this, offer, pin, phase));
+            })
+            .setNegativeButton("Zrušit", null)
+            .show();
+    }
+
+    // ------------------------------------------------------------------ sharing
+
+    private void startShare(String fp) {
+        if (ShareService.active) { Ui.error(this, "Nejprve ukončete současné vysílání."); return; }
+        pendingShareFp = fp;
+        List<String> perms = new ArrayList<>();
+        if (audioEnabled && Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (!perms.isEmpty()) { requestPermissions(perms.toArray(new String[0]), PERMS); return; }
+        launchCapture();
+    }
+
+    private void launchCapture() {
         MediaProjectionManager m = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(m.createScreenCaptureIntent(), CAPTURE);
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
-        if (request == CAMERA) {
+        if (request == SCAN) {
             if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                 startActivityForResult(new Intent(this, ScanActivity.class), SCAN);
             } else {
-                Ui.error(this, "Fotoaparát slouží pouze ke čtení QR kódu. Můžete také vložit párovací kód ručně.");
+                Ui.error(this, "Fotoaparát slouží pouze ke čtení QR kódu. Můžete tabuli najít v síti (PIN) nebo vložit kód.");
             }
-        } else if (request == AUDIO_PERM) {
-            String code = pendingPairingAfterAudioPerm;
-            pendingPairingAfterAudioPerm = null;
-            if (code != null) {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    Toast.makeText(this, "Oprávnění pro zvuk nebylo uděleno — přenáším jen obraz.", Toast.LENGTH_LONG).show();
-                }
-                launchScreenCapture(code);
+        } else if (request == PERMS && pendingShareFp != null) {
+            if (audioEnabled && Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Oprávnění pro zvuk nebylo uděleno — přenáším jen obraz.", Toast.LENGTH_LONG).show();
             }
+            launchCapture();
         }
     }
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (request == SCAN && result == RESULT_OK && data != null) {
-            begin(data.getStringExtra("pairing"));
-        }
-        if (request == CAPTURE) {
-            if (result == RESULT_OK && data != null && pairing != null) {
+            pairCode(data.getStringExtra("pairing"));
+        } else if (request == CAPTURE) {
+            if (result == RESULT_OK && data != null && pendingShareFp != null) {
                 Intent i = new Intent(this, ShareService.class)
-                    .putExtra("pairing", pairing)
+                    .putExtra("board_fp", pendingShareFp)
                     .putExtra("quality", quality)
                     .putExtra("audio", audioEnabled)
                     .putExtra("audioVolume", audioVolume)
@@ -577,17 +631,18 @@ public class MainActivity extends Activity {
                     .putExtra("capture", data);
                 try {
                     startForegroundService(i);
+                    lastShownStatus = "Připojuji se k tabuli…";
                 } catch (Exception e) {
                     Ui.error(this, Ui.problem(e));
                 }
             } else if (result != RESULT_OK) {
-                ShareService.status = "Sdílení obrazovky nebylo povoleno.";
-                status.setText(ShareService.status);
+                Toast.makeText(this, "Sdílení obrazovky nebylo povoleno.", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
-    @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); b.putString("pairing", pairing); }
-    @Override protected void onResume() { super.onResume(); refreshSavedUi(); tickCount = 0; main.post(tick); }
+    @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); b.putString("pending_fp", pendingShareFp); }
+    @Override protected void onRestoreInstanceState(Bundle b) { super.onRestoreInstanceState(b); pendingShareFp = b.getString("pending_fp"); }
+    @Override protected void onResume() { super.onResume(); if (boardsList != null) { main.removeCallbacks(tick); main.post(tick); } }
     @Override protected void onPause() { main.removeCallbacks(tick); super.onPause(); }
 }
