@@ -282,7 +282,7 @@ final class Wire {
                                 List<Endpoint> eps = endpoints(appContext);
                                 if (!eps.isEmpty()) ip = eps.get(0).ip;
                             }
-                            byte[] reply = DiscoveryProtocol.buildOffer(deviceName, tcpPort, fp, ip)
+                            byte[] reply = DiscoveryProtocol.buildOffer(this.deviceName, tcpPort, fp, ip)
                                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
                             DatagramPacket resp = new DatagramPacket(reply, reply.length, req.getSocketAddress());
                             udp.send(resp);

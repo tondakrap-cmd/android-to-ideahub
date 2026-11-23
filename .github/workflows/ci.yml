@@ -46,6 +46,17 @@ jobs:
       - name: Sestavení EXE
         shell: pwsh
         run: ./Build-Windows.ps1 -OutputFile "$PWD\build\TabuleLink-Windows-0.7.0.exe"
+      - name: Kouřový test (spuštění okna bez pádu)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "$PWD\build\TabuleLink-Windows-0.7.0.exe" -PassThru
+          Start-Sleep -Seconds 8
+          $p.Refresh()
+          $title = $p.MainWindowTitle
+          Write-Output "HasExited=$($p.HasExited) Title='$title'"
+          if ($p.HasExited) { throw "Aplikace se ukončila (kód $($p.ExitCode))." }
+          if ($title -like '*chyba*') { throw "Aplikace zobrazila chybu spuštění: $title" }
+          Stop-Process -Id $p.Id -Force
       - uses: actions/upload-artifact@v4
         with:
           name: TabuleLink-Windows-0.7.0

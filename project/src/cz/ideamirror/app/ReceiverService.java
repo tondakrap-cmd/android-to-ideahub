@@ -544,15 +544,10 @@ public class ReceiverService extends Service implements Proto.ServerContext, Vid
             }
             pendingHandshakes.decrementAndGet();
             handshakeCounted = false;
+            if (auth.has(Proto.CAP_PAIR)) return; // pairing-only connection (presenter connects again with its new key)
 
             phase = "hlavička videa";
-            sock.setSoTimeout(auth.paired && auth.has(Proto.CAP_PAIR) ? 15000 : 10000);
-            int magic;
-            try {
-                magic = in.readInt();
-            } catch (EOFException pairOnly) {
-                return; // pairing-only connection closed by the presenter
-            }
+            int magic = in.readInt();
             if (magic != Wire.MAGIC) throw new IOException("Nekompatibilní verze přenosu.");
             int width = in.readInt(), height = in.readInt();
             if (!Proto.validVideoSize(width, height)) {
