@@ -1,0 +1,45 @@
+TABULE LINK 0.7.0 — KONTROLY (ANDROID + WINDOWS)
+=================================================
+
+Datum: 23. 11. 2026
+Android balíček: cz.ideamirror.app, versionCode 10, versionName 0.7.0
+Windows aplikace: TabuleLink-Windows-0.7.0.exe (C# 5 / .NET Framework 4.8, x64)
+Přehled změn: CHANGELOG.md
+
+Ověřeno automaticky
+- Přenosné Java testy (python project/test.py): PASS — 287 kontrol. Navíc oproti 0.6:
+  SPAKE2 (shoda, špatný PIN, vazba na otisk certifikátu/MITM, neplatné prvky),
+  handshake v2 přes skutečné TCP sockety (token z QR + rotace, klíč zařízení, odvolání,
+  PIN párování + rotace PINu, špatný PIN, zámky pro každou adresu, starý klient 0.6,
+  odmítnutí nešifrovaného PINu, poznání staré tabule), registr zařízení, úložiště tabulí,
+  geometrie, řídicí pakety, fronta snímků v2, LAN vyhledávání s pomalou tabulí.
+- Windows testy (Test-Windows.ps1 na windows-latest v GitHub Actions): PASS — 123 kontrol,
+  včetně společného testovacího vektoru SPAKE2 shodného s Javou bajt po bajtu.
+- Interoperabilita: Java tabule (Proto.serverAuthenticate) ↔ C# klient (Proto2.PairPin) přes
+  TCP: spárování PINem, odmítnutí špatného PINu, rotace PINu, čekání na schválení, řídicí paket.
+- Překlad celého Android projektu proti Android API 35 bez chyb a varování; sestavení APK
+  v CI (aapt2 + d8 + apksigner, build-tools 35.0.0).
+- Překlad Windows aplikace vestavěným csc.exe (CI windows-latest) i Mono (C# 5) bez varování;
+  kouřový test spuštění okna v CI.
+- ffmpeg: parametry kodéru x264 (GOP 1 s → klíčový snímek každých 30 snímků ověřen
+  parserem), parametry NVENC/QSV přijaty ffmpegem (bez GPU v CI nelze spustit).
+- Rozvržení Windows okna zkontrolováno vykreslením (Mono/Xvfb).
+
+NEOVĚŘENO — nutno vyzkoušet na skutečných zařízeních
+- Huawei IdeaHub: nová obrazovka příjmu, Správa, rozdělená obrazovka, schválení převzetí,
+  návrat po skrytí obrazovky, dotykové ovládání, zavření po nečinnosti, start po bootu.
+- Android tablet: nové GUI, LAN vyhledání + PIN, pauza, otočení za běhu (VirtualDisplay.resize),
+  automatické znovupřipojení po výpadku Wi-Fi.
+- Windows: škálování 125/150 % a více monitorů s různým DPI, mapování ddagrab přes DXGI
+  (hybridní grafika), hardwarové kodéry NVENC/QSV/AMF, sdílení okna, mini lišta (vyloučení
+  ze záznamu), klávesové zkratky, ztlumení reproduktorů (chování závisí na ovladači),
+  dotykové ovládání přes SendInput.
+
+Kompatibilita
+- Tablety a notebooky spárované s 0.6 fungují s tabulí 0.7 dál (sdílený klíč 0.6).
+- Klient 0.7 umí tabuli 0.6 přes QR / ruční kód (bez nových funkcí).
+- Nešifrované párování PINem z Windows 0.5/0.6 tabule 0.7 odmítá — aktualizujte notebook.
+
+Podpis APK
+- APK z CI je podepsané dočasným klíčem. Pro aktualizaci již nainstalované aplikace bez
+  odinstalace sestavte APK lokálně skriptem Build.ps1 se stejným klíčem (project/.signing).
