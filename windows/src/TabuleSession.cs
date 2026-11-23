@@ -46,6 +46,7 @@ namespace TabuleLinkWin
         public string Fingerprint;
         public string Secret; // either 32-hex secret OR null when using Pin6
         public string Pin6;   // 6-digit PIN for first pairing
+        public string FfmpegPath;
         public int ScreenIndex;
         public QualityProfile Quality;
         public bool AudioEnabled;
@@ -88,33 +89,102 @@ namespace TabuleLinkWin
             this.onStopped = onStopped;
         }
 
-        public static string FindFfmpeg()
+        public static string FindFfmpeg(string customPath)
         {
+            if (!string.IsNullOrEmpty(customPath))
+            {
+                try { if (File.Exists(customPath)) return customPath; } catch { }
+            }
+
+            // 1. Next to TabuleLink.exe
             try
             {
                 string exeDir = Path.GetDirectoryName(Application.ExecutablePath);
                 if (!string.IsNullOrEmpty(exeDir))
                 {
-                    string local = Path.Combine(exeDir, "ffmpeg.exe");
-                    if (File.Exists(local)) return local;
+                    string[] localCandidates = new string[]
+                    {
+                        Path.Combine(exeDir, "ffmpeg.exe"),
+                        Path.Combine(exeDir, "bin", "ffmpeg.exe"),
+                        Path.Combine(exeDir, "ffmpeg", "bin", "ffmpeg.exe")
+                    };
+                    for (int i = 0; i < localCandidates.Length; i++)
+                    {
+                        if (File.Exists(localCandidates[i])) return localCandidates[i];
+                    }
                 }
             }
             catch { }
 
-            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-            string[] dirs = pathEnv.Split(';');
-            for (int i = 0; i < dirs.Length; i++)
+            // 2. App's LocalAppData folder
+            string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            try
             {
-                string d = dirs[i].Trim().Trim('"');
-                if (d.Length == 0) continue;
-                try
-                {
-                    string cand = Path.Combine(d, "ffmpeg.exe");
-                    if (File.Exists(cand)) return cand;
-                }
-                catch { }
+                string appFfmpeg = Path.Combine(localApp, "TabuleLink", "ffmpeg.exe");
+                if (File.Exists(appFfmpeg)) return appFfmpeg;
             }
+            catch { }
+
+            // 3. Process, User, and Machine PATH (handles freshly installed FFmpeg before Explorer restarts)
+            string[] pathVars = new string[]
+            {
+                Environment.GetEnvironmentVariable("PATH"),
+                SafeEnv("PATH", EnvironmentVariableTarget.User),
+                SafeEnv("PATH", EnvironmentVariableTarget.Machine)
+            };
+            for (int p = 0; p < pathVars.Length; p++)
+            {
+                string pathEnv = pathVars[p];
+                if (string.IsNullOrEmpty(pathEnv)) continue;
+                string[] dirs = pathEnv.Split(';');
+                for (int i = 0; i < dirs.Length; i++)
+                {
+                    string d = dirs[i].Trim().Trim('"');
+                    if (d.Length == 0) continue;
+                    try
+                    {
+                        string cand = Path.Combine(d, "ffmpeg.exe");
+                        if (File.Exists(cand)) return cand;
+                    }
+                    catch { }
+                }
+            }
+
+            // 4. Common Windows / WinGet install locations
+            try
+            {
+                string wingetLink = Path.Combine(localApp, "Microsoft", "WinGet", "Links", "ffmpeg.exe");
+                if (File.Exists(wingetLink)) return wingetLink;
+                string wingetPkgs = Path.Combine(localApp, "Microsoft", "WinGet", "Packages");
+                if (Directory.Exists(wingetPkgs))
+                {
+                    string[] dirs = Directory.GetDirectories(wingetPkgs, "*FFmpeg*");
+                    for (int i = 0; i < dirs.Length; i++)
+                    {
+                        string[] found = Directory.GetFiles(dirs[i], "ffmpeg.exe", SearchOption.AllDirectories);
+                        if (found.Length > 0) return found[0];
+                    }
+                }
+            }
+            catch { }
+
+            string[] commonPaths = new string[]
+            {
+                @"C:\ffmpeg\bin\ffmpeg.exe",
+                @"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+                @"C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe"
+            };
+            for (int i = 0; i < commonPaths.Length; i++)
+            {
+                try { if (File.Exists(commonPaths[i])) return commonPaths[i]; } catch { }
+            }
+
             return null;
+        }
+
+        private static string SafeEnv(string name, EnvironmentVariableTarget target)
+        {
+            try { return Environment.GetEnvironmentVariable(name, target); } catch { return null; }
         }
 
         public string BuildDiagnostics()
@@ -170,10 +240,10 @@ namespace TabuleLinkWin
 
             try
             {
-                string ffmpegPath = FindFfmpeg();
+                string ffmpegPath = FindFfmpeg(cfg.FfmpegPath);
                 if (string.IsNullOrEmpty(ffmpegPath))
                 {
-                    throw new FileNotFoundException("Nebyl nalezen program ffmpeg.exe. Položte ffmpeg.exe do složky s TabuleLink.exe nebo nainstalujte FFmpeg (winget install Gyan.FFmpeg).");
+                    throw new FileNotFoundException("Nebyl nalezen program ffmpeg.exe. Klikněte na „Nainstalovat FFmpeg“ nebo „Vybrat ffmpeg.exe“ v aplikaci, případně položte ffmpeg.exe vedle TabuleLink.exe.");
                 }
 
                 // 1. TCP connect

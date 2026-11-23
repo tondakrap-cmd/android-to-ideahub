@@ -28,6 +28,7 @@ namespace TabuleLinkWin
 
         private string savedUri;
         private string savedHost;
+        private string customFfmpegPath;
         private int qualityIndex = 1;
         private bool audioEnabled = true;
         private int audioVolume = 70;
@@ -51,6 +52,9 @@ namespace TabuleLinkWin
         private Label volLabel;
         private TrackBar volTrack;
         private Button muteBtn;
+        private Label ffmpegStatusLabel;
+        private Button installFfmpegBtn;
+        private Button browseFfmpegBtn;
         private Label statusLabel;
         private Button stopBtn;
         private NotifyIcon trayIcon;
@@ -309,9 +313,24 @@ namespace TabuleLinkWin
             };
             audioCard.Controls.Add(volTrack);
 
-            audioCard.Controls.Add(MakeMutedLabel("Hlasitost lze měnit živě za běhu vysílání, aniž by se měnila hlasitost\nvideokonference na tabuli. FFmpeg: "
-                + (TabuleSession.FindFfmpeg() != null ? "nalezen ✓" : "CHYBÍ!"), 16, 182, 390, 40));
+            audioCard.Controls.Add(MakeMutedLabel("Hlasitost lze měnit živě za běhu bez vlivu na videokonferenci tabule.", 16, 174, 390, 20));
+
+            ffmpegStatusLabel = new Label();
+            ffmpegStatusLabel.Location = new Point(16, 198);
+            ffmpegStatusLabel.Size = new Size(162, 24);
+            ffmpegStatusLabel.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+            audioCard.Controls.Add(ffmpegStatusLabel);
+
+            installFfmpegBtn = MakeAccentButton("Nainstalovat FFmpeg", 180, 194, 126, 28, delegate { InstallFfmpegViaWinget(); });
+            installFfmpegBtn.Font = new Font("Segoe UI", 8f, FontStyle.Bold);
+            audioCard.Controls.Add(installFfmpegBtn);
+
+            browseFfmpegBtn = MakeSecondaryButton("Vybrat .exe", 312, 194, 94, 28, delegate { BrowseFfmpeg(); });
+            browseFfmpegBtn.Font = new Font("Segoe UI", 8f);
+            audioCard.Controls.Add(browseFfmpegBtn);
+
             UpdateAudioControlsState();
+            RefreshFfmpegStatus();
 
             // BOTTOM STATUS & WINDOW CONTROL BAR
             Panel bottomCard = MakeCard(false);
@@ -403,6 +422,80 @@ namespace TabuleLinkWin
             StopStreaming("Aplikace ukončena.");
             if (trayIcon != null) { trayIcon.Visible = false; trayIcon.Dispose(); }
             base.OnFormClosing(e);
+        }
+
+        private void RefreshFfmpegStatus()
+        {
+            string found = TabuleSession.FindFfmpeg(customFfmpegPath);
+            if (!string.IsNullOrEmpty(found))
+            {
+                ffmpegStatusLabel.Text = "FFmpeg: nalezen ✓";
+                ffmpegStatusLabel.ForeColor = AccentColor;
+                installFfmpegBtn.Visible = false;
+                browseFfmpegBtn.Location = new Point(312, 194);
+            }
+            else
+            {
+                ffmpegStatusLabel.Text = "FFmpeg: CHYBÍ!";
+                ffmpegStatusLabel.ForeColor = DangerText;
+                installFfmpegBtn.Visible = true;
+                browseFfmpegBtn.Location = new Point(312, 194);
+            }
+        }
+
+        private void BrowseFfmpeg()
+        {
+            using (OpenFileDialog ofd = new OpenFileDialog())
+            {
+                ofd.Title = "Vyberte soubor ffmpeg.exe";
+                ofd.Filter = "FFmpeg (ffmpeg.exe)|ffmpeg.exe|Spustitelné soubory (*.exe)|*.exe";
+                if (ofd.ShowDialog(this) == DialogResult.OK && File.Exists(ofd.FileName))
+                {
+                    customFfmpegPath = ofd.FileName;
+                    SaveSettings();
+                    RefreshFfmpegStatus();
+                    statusLabel.Text = "FFmpeg nastaven: " + customFfmpegPath;
+                }
+            }
+        }
+
+        private void InstallFfmpegViaWinget()
+        {
+            try
+            {
+                statusLabel.Text = "Spouštím instalaci FFmpeg přes winget… Po dokončení zavřete okno terminálu.";
+                System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
+                psi.FileName = "cmd.exe";
+                psi.Arguments = "/c echo Instaluji FFmpeg pro Tabule Link... & winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements & echo. & echo Hotovo! Muzete toto okno zavrit. & pause";
+                psi.UseShellExecute = true;
+                System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi);
+                if (p != null)
+                {
+                    Thread t = new Thread(delegate()
+                    {
+                        try { p.WaitForExit(); } catch { }
+                        InvokeSafe(delegate
+                        {
+                            RefreshFfmpegStatus();
+                            if (!string.IsNullOrEmpty(TabuleSession.FindFfmpeg(customFfmpegPath)))
+                            {
+                                statusLabel.Text = "FFmpeg byl úspěšně nainstalován a nalezen ✓";
+                            }
+                            else
+                            {
+                                statusLabel.Text = "Instalace skončila, ale ffmpeg.exe nebyl nalezen. Zkuste jej vybrat ručně.";
+                            }
+                        });
+                    });
+                    t.IsBackground = true;
+                    t.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Nepodařilo se spustit winget: " + ex.Message + "\r\nStáhněte si ffmpeg.exe ručně a položte jej vedle TabuleLink.exe.",
+                    "Instalace FFmpeg", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         private void UpdateAudioControlsState()
@@ -609,6 +702,7 @@ namespace TabuleLinkWin
             cfg.Fingerprint = fp;
             cfg.Secret = secret;
             cfg.Pin6 = pin6;
+            cfg.FfmpegPath = customFfmpegPath;
             cfg.ScreenIndex = Math.Max(0, monitorCombo.SelectedIndex);
             cfg.Quality = QualityProfile.All[Math.Max(0, Math.Min(QualityProfile.All.Length - 1, qualityIndex))];
             cfg.AudioEnabled = audioEnabled;
@@ -658,7 +752,7 @@ namespace TabuleLinkWin
         {
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("Windows " + Environment.OSVersion.VersionString + " · Tabule Link " + WireConstants.Version);
-            sb.AppendLine("FFmpeg: " + (TabuleSession.FindFfmpeg() ?? "NENALEZEN"));
+            sb.AppendLine("FFmpeg: " + (TabuleSession.FindFfmpeg(customFfmpegPath) ?? "NENALEZEN"));
             sb.AppendLine("Síť notebooku: " + localNetLabel.Text.Replace("\r\n", ", "));
             if (activeSession != null) sb.AppendLine(activeSession.BuildDiagnostics());
             else sb.AppendLine("Stav: " + statusLabel.Text);
@@ -724,6 +818,10 @@ namespace TabuleLinkWin
                             if (audioVolume > 0) lastNonZeroVolume = audioVolume;
                         }
                     }
+                    else if (k == "ffmpeg" && v.Length > 0)
+                    {
+                        customFfmpegPath = v;
+                    }
                 }
             }
             catch { }
@@ -738,6 +836,7 @@ namespace TabuleLinkWin
                 sb.AppendLine("quality=" + qualityIndex.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("audio=" + (audioEnabled ? "1" : "0"));
                 sb.AppendLine("volume=" + audioVolume.ToString(CultureInfo.InvariantCulture));
+                if (!string.IsNullOrEmpty(customFfmpegPath)) sb.AppendLine("ffmpeg=" + customFfmpegPath);
                 File.WriteAllText(ConfigFilePath(), sb.ToString(), Encoding.UTF8);
             }
             catch { }
