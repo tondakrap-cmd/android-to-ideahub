@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Net.Security;
@@ -23,11 +25,7 @@ namespace TabuleLinkWin
 
         public QualityProfile(int index, string label, int maxSide, int fps, int bitrateKbps)
         {
-            Index = index;
-            Label = label;
-            MaxSide = maxSide;
-            Fps = fps;
-            BitrateKbps = bitrateKbps;
+            Index = index; Label = label; MaxSide = maxSide; Fps = fps; BitrateKbps = bitrateKbps;
         }
 
         public static readonly QualityProfile[] All = new QualityProfile[]
@@ -39,35 +37,69 @@ namespace TabuleLinkWin
         };
     }
 
-    public sealed class SessionConfig
+    /// <summary>H.264 encoder choices passed to ffmpeg.</summary>
+    public static class Encoders
     {
-        public string Host;
-        public int Port;
-        public string Fingerprint;
-        public string Secret; // either 32-hex secret OR null when using Pin6
-        public string Pin6;   // 6-digit PIN for first pairing
-        public string FfmpegPath;
-        public int ScreenIndex;
-        public QualityProfile Quality;
-        public bool AudioEnabled;
-        public Func<int> GetVolumePercent;
+        public static readonly string[] Ids = new string[] { "auto", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "libx264" };
+        public static readonly string[] Labels = new string[]
+        {
+            "Automaticky (grafická karta, jinak procesor)",
+            "NVIDIA NVENC", "Intel Quick Sync", "AMD AMF", "Windows Media Foundation", "Procesor (x264)"
+        };
+
+        public static string Describe(string id)
+        {
+            for (int i = 0; i < Ids.Length; i++) if (Ids[i] == id) return Labels[i];
+            return id;
+        }
     }
 
+    public sealed class SessionConfig
+    {
+        public BoardEntry Board;
+        public string FfmpegPath;
+        public int ScreenIndex;
+        public IntPtr WindowHandle;  // IntPtr.Zero = share a monitor
+        public string WindowTitle;
+        public QualityProfile Quality;
+        public string Encoder = "auto";
+        public bool AudioEnabled;
+        public Func<int> GetVolumePercent;
+        public bool MuteSpeakers;
+        public bool AllowTouch;
+        public string DeviceName;
+    }
+
+    /// <summary>
+    /// One sharing session. Capture (ffmpeg video, WASAPI + ffmpeg AAC audio) runs for the whole session; the
+    /// network link to the board is managed separately and re-established automatically after short Wi-Fi drops
+    /// (v2 boards). The board can send back takeover/close notices, key-frame requests and touch input.
+    /// </summary>
     public sealed class TabuleSession : IDisposable
     {
+        private const int ReconnectWindowMs = 30000;
+
         private readonly SessionConfig cfg;
         private readonly Action<string> onStatus;
-        private readonly Action<string> onPairedUri;
-        private readonly Action onStopped;
+        private readonly Action<BoardEntry> onBoardUpdated;
+        private readonly Action<string, bool> onStopped;
+        private readonly Action<string> onNotice;
 
         private volatile bool running;
+        private volatile bool paused;
+        private volatile bool reconnecting;
         private Thread mainThread;
-        private TcpClient tcp;
-        private SslStream ssl;
         private Process videoProc;
         private Process audioProc;
         private WasapiLoopback wasapi;
-        private FrameQueue queue;
+        private volatile Link link;
+        private volatile byte[] lastVideoConfig;
+        private volatile byte[] lastAudioConfig;
+        private volatile int curW, curH;
+        private Rectangle captureRect;
+        private string stopReason;
+        private bool stopIsError;
+        private bool? speakerMutedBefore;
 
         public volatile string DiagPhase = "nečinný";
         public volatile string DiagCapture = "-";
@@ -78,15 +110,39 @@ namespace TabuleLinkWin
         public long DiagVideoFrames;
         public long DiagAudioFrames;
         public long DiagDrops;
+        public volatile string BoardName = "";
 
         public bool IsRunning { get { return running; } }
+        public bool IsPaused { get { return paused; } }
+        public bool IsReconnecting { get { return reconnecting; } }
+        public BoardEntry Board { get { return cfg.Board; } }
 
-        public TabuleSession(SessionConfig cfg, Action<string> onStatus, Action<string> onPairedUri, Action onStopped)
+        private sealed class Link
+        {
+            public TcpClient Tcp;
+            public SslStream Ssl;
+            public bool V2;
+            public readonly FrameQueue Queue = new FrameQueue();
+            public volatile string EndNotice;
+            public volatile bool Dead;
+            public long WritingSince; // Environment.TickCount when a write started, 0 = idle
+            public void Close()
+            {
+                Dead = true;
+                Queue.Close();
+                try { Ssl.Close(); } catch { }
+                try { Tcp.Close(); } catch { }
+            }
+        }
+
+        public TabuleSession(SessionConfig cfg, Action<string> onStatus, Action<BoardEntry> onBoardUpdated, Action<string, bool> onStopped, Action<string> onNotice)
         {
             this.cfg = cfg;
             this.onStatus = onStatus;
-            this.onPairedUri = onPairedUri;
+            this.onBoardUpdated = onBoardUpdated;
             this.onStopped = onStopped;
+            this.onNotice = onNotice;
+            BoardName = cfg.Board.Name;
         }
 
         public static string FindFfmpeg(string customPath)
@@ -187,15 +243,125 @@ namespace TabuleLinkWin
             try { return Environment.GetEnvironmentVariable(name, target); } catch { return null; }
         }
 
+        // ------------------------------------------------------------------ pairing (no streaming)
+
+        private static SslStream OpenTls(string host, int port, string fp, int timeoutMs, out TcpClient tcp)
+        {
+            tcp = new TcpClient();
+            tcp.NoDelay = true;
+            tcp.SendBufferSize = 256 * 1024;
+            tcp.ReceiveBufferSize = 128 * 1024;
+            IAsyncResult ar = tcp.BeginConnect(host, port, null, null);
+            if (!ar.AsyncWaitHandle.WaitOne(timeoutMs, false))
+            {
+                try { tcp.Close(); } catch { }
+                throw new IOException("Vypršel časový limit připojení k tabuli " + host + ":" + port.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            tcp.EndConnect(ar);
+            tcp.SendTimeout = 8000;
+            tcp.ReceiveTimeout = 8000;
+            string expected = fp.ToLowerInvariant();
+            SslStream ssl = new SslStream(tcp.GetStream(), false, delegate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errs)
+            {
+                if (cert == null) return false;
+                byte[] hash;
+                using (SHA256 sha = SHA256.Create()) hash = sha.ComputeHash(cert.GetRawCertData());
+                return Spake2.MacEquals(Spake2.Hex(hash), expected);
+            });
+            try
+            {
+                ssl.AuthenticateAsClient(host, null, SslProtocols.Tls12, false);
+            }
+            catch
+            {
+                try { ssl.Close(); } catch { }
+                try { tcp.Close(); } catch { }
+                throw;
+            }
+            return ssl;
+        }
+
+        private static BoardEntry FromResult(string fp, string host, int port, ClientResult r)
+        {
+            BoardEntry b = new BoardEntry();
+            b.Name = r.BoardName;
+            b.Fingerprint = fp;
+            b.Host = host;
+            b.Port = port;
+            b.DeviceId = r.DeviceId;
+            b.DeviceKey = r.DeviceKey;
+            b.LastUsed = DateTime.UtcNow.Ticks;
+            return b;
+        }
+
+        /// <summary>LAN discovery offer + 6-digit PIN (SPAKE2: the PIN never leaves the notebook).</summary>
+        public static BoardEntry PairWithPin(DiscoveryOffer offer, string pin, string deviceName)
+        {
+            TcpClient tcp;
+            SslStream ssl = OpenTls(offer.Ip, offer.Port, offer.Fingerprint, 8000, out tcp);
+            try
+            {
+                ClientResult r = Proto2.PairPin(ssl, pin, offer.Fingerprint, deviceName, new string[] { Proto2.CapCtl, Proto2.CapPair });
+                BoardEntry b = FromResult(offer.Fingerprint, offer.Ip, offer.Port, r);
+                if (b.Name == "Tabule Link") b.Name = offer.Name;
+                return b;
+            }
+            catch (OldServerException)
+            {
+                throw new IOException("Tabule má starší verzi Tabule Link (0.6). Aktualizujte ji, nebo vložte ruční kód z tabule.");
+            }
+            finally
+            {
+                try { ssl.Close(); } catch { }
+                try { tcp.Close(); } catch { }
+            }
+        }
+
+        /// <summary>tabulelink:// code: one-time token (0.7 boards) or the shared secret of 0.6 boards.</summary>
+        public static BoardEntry PairWithCode(PairCode code, string deviceName)
+        {
+            TcpClient tcp;
+            SslStream ssl = OpenTls(code.Host, code.Port, code.Fingerprint, 8000, out tcp);
+            try
+            {
+                ClientResult r = Proto2.Hello(ssl, "TOKEN", "-", code.Secret, deviceName, new string[] { Proto2.CapCtl, Proto2.CapPair });
+                return FromResult(code.Fingerprint, code.Host, code.Port, r);
+            }
+            catch (OldServerException)
+            {
+                try { ssl.Close(); } catch { }
+                try { tcp.Close(); } catch { }
+                ssl = OpenTls(code.Host, code.Port, code.Fingerprint, 8000, out tcp);
+                Proto2.Legacy(ssl, code.Secret);
+                BoardEntry b = new BoardEntry();
+                b.Name = "Tabule " + code.Host + " (0.6)";
+                b.Fingerprint = code.Fingerprint;
+                b.Host = code.Host;
+                b.Port = code.Port;
+                b.LegacySecret = code.Secret;
+                b.LastUsed = DateTime.UtcNow.Ticks;
+                return b;
+            }
+            finally
+            {
+                try { ssl.Close(); } catch { }
+                try { tcp.Close(); } catch { }
+            }
+        }
+
+        // ------------------------------------------------------------------ public control
+
         public string BuildDiagnostics()
         {
             return "Windows " + Environment.OSVersion.VersionString + " · Tabule Link " + WireConstants.Version
-                + "\r\nCíl: " + cfg.Host + ":" + cfg.Port
-                + "\r\nFáze: " + DiagPhase
+                + "\r\nCíl: " + BoardName + " (" + cfg.Board.Address + ")" + (link != null && !link.V2 ? " · starší tabule 0.6" : "")
+                + "\r\nZdroj: " + (cfg.WindowHandle != IntPtr.Zero ? "okno „" + cfg.WindowTitle + "“" : "monitor " + (cfg.ScreenIndex + 1))
+                + "\r\nFáze: " + DiagPhase + (paused ? " · pozastaveno" : "") + (reconnecting ? " · obnovuji spojení" : "")
                 + "\r\nVideo: " + DiagCapture
                 + "\r\nZvuk: " + DiagAudio + " (" + Interlocked.Read(ref DiagAudioFrames) + " rámců)"
                 + "\r\nFPS / zápis: " + DiagFps + " fps · ~" + DiagAvgWriteMs + " ms"
                 + "\r\nOdeslané / přeskočené snímky: " + Interlocked.Read(ref DiagVideoFrames) + " / " + Interlocked.Read(ref DiagDrops)
+                + "\r\nDotykové ovládání z tabule: " + (cfg.AllowTouch ? "povoleno" : "vypnuto")
                 + "\r\nPoslední chyba: " + DiagError;
         }
 
@@ -211,262 +377,560 @@ namespace TabuleLinkWin
 
         public void Stop()
         {
-            running = false;
-            if (queue != null) queue.Close();
-            KillProcess(ref videoProc);
-            KillProcess(ref audioProc);
-            if (wasapi != null) { try { wasapi.Dispose(); } catch { } wasapi = null; }
-            if (ssl != null) { try { ssl.Close(); } catch { } ssl = null; }
-            if (tcp != null) { try { tcp.Close(); } catch { } tcp = null; }
+            if (!running) return;
+            Finish("Vysílání ukončeno.", false);
         }
 
-        public void Dispose()
+        public void Dispose() { Stop(); }
+
+        /// <summary>Freezes the board on the last frame (audio keeps playing).</summary>
+        public void SetPaused(bool p)
         {
-            Stop();
+            paused = p;
+            Link l = link;
+            if (l != null && l.V2) l.Queue.Offer(Proto2.Control(p ? Proto2.CtlPause : Proto2.CtlResume));
+            if (!p && l != null) l.Queue.RequireKeyFrame();
         }
 
         private void Report(string phase, string message)
         {
             DiagPhase = phase;
-            if (onStatus != null) onStatus(message);
+            if (onStatus != null && message != null) onStatus(message);
         }
+
+        private void Finish(string reason, bool error)
+        {
+            lock (this)
+            {
+                if (stopReason == null) { stopReason = reason; stopIsError = error; }
+            }
+            running = false;
+            Link l = link;
+            if (l != null) SayBye(l);
+            KillProcess(ref videoProc);
+            KillProcess(ref audioProc);
+            WasapiLoopback w = wasapi;
+            if (w != null) { try { w.Dispose(); } catch { } }
+        }
+
+        private static void SayBye(Link l)
+        {
+            if (l.V2 && !l.Dead)
+            {
+                l.Queue.Offer(Proto2.Control(Proto2.CtlBye));
+                ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(250); l.Close(); });
+            }
+            else
+            {
+                l.Close();
+            }
+        }
+
+        // ------------------------------------------------------------------ main
 
         private void Run()
         {
-            Thread netThread = null;
-            Thread audioReaderThread = null;
-            Exception netFailure = null;
-            queue = new FrameQueue();
-
+            Thread linkThread = null;
+            Thread audioReader = null;
             try
             {
                 string ffmpegPath = FindFfmpeg(cfg.FfmpegPath);
                 if (string.IsNullOrEmpty(ffmpegPath))
                 {
-                    throw new FileNotFoundException("Nebyl nalezen program ffmpeg.exe. Klikněte na „Nainstalovat FFmpeg“ nebo „Vybrat ffmpeg.exe“ v aplikaci, případně položte ffmpeg.exe vedle TabuleLink.exe.");
+                    throw new FileNotFoundException("Nebyl nalezen program ffmpeg.exe. Klikněte na „Nainstalovat FFmpeg“ nebo „Vybrat ffmpeg.exe“.");
                 }
+                Rectangle rect = CurrentSourceRect();
+                if (rect.Width < 16 || rect.Height < 16) throw new IOException("Sdílené okno nebo monitor není k dispozici.");
+                captureRect = rect;
+                int[] g = VideoGeometry.Fit(rect.Width, rect.Height, cfg.Quality.MaxSide);
+                curW = g[0];
+                curH = g[1];
 
-                // 1. TCP connect
-                Report("TCP připojení", "Připojuji se k " + cfg.Host + ":" + cfg.Port + "…");
-                tcp = new TcpClient();
-                tcp.NoDelay = true;
-                tcp.SendBufferSize = 128 * 1024;
-                tcp.ReceiveBufferSize = 128 * 1024;
-                IAsyncResult ar = tcp.BeginConnect(cfg.Host, cfg.Port, null, null);
-                if (!ar.AsyncWaitHandle.WaitOne(8000, false))
-                {
-                    throw new IOException("Vypršel časový limit TCP připojení k tabuli.");
-                }
-                tcp.EndConnect(ar);
-                tcp.SendTimeout = 8000;
-                tcp.ReceiveTimeout = 8000;
+                if (cfg.MuteSpeakers) speakerMutedBefore = Native.SetSpeakerMute(true);
 
-                // 2. TLS 1.2 handshake with strict SHA-256 certificate pinning
-                Report("TLS 1.2 handshake", "Ověřuji zabezpečené spojení TLS 1.2…");
-                string expectedFp = cfg.Fingerprint.ToLowerInvariant();
-                ssl = new SslStream(tcp.GetStream(), false, delegate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errs)
-                {
-                    if (cert == null) return false;
-                    byte[] hash;
-                    using (SHA256 sha = SHA256.Create())
-                    {
-                        hash = sha.ComputeHash(cert.GetRawCertData());
-                    }
-                    StringBuilder sb = new StringBuilder(64);
-                    for (int i = 0; i < hash.Length; i++) sb.Append(hash[i].ToString("x2", CultureInfo.InvariantCulture));
-                    return FixedTimeEquals(sb.ToString(), expectedFp);
-                });
-                ssl.AuthenticateAsClient(cfg.Host, null, SslProtocols.Tls12, false);
+                linkThread = new Thread(ManageLink);
+                linkThread.IsBackground = true;
+                linkThread.Name = "tabule-win-link";
+                linkThread.Start();
 
-                // 3. Authenticate using saved 128-bit secret OR 6-digit PIN
-                Report("Ověření klíče", "Ověřuji přístup na tabuli…");
-                if (!string.IsNullOrEmpty(cfg.Pin6))
-                {
-                    WireIO.WriteJavaUtf(ssl, "PIN:" + cfg.Pin6);
-                    ssl.Flush();
-                    int resp = WireIO.ReadInt32BE(ssl);
-                    if (resp != WireConstants.MagicPinOk)
-                    {
-                        throw new IOException("Tabule odmítla PIN (zkontrolujte, zda na tabuli běží Tabule Link 0.5.0+).");
-                    }
-                    string receivedSecret = WireIO.ReadJavaUtf(ssl);
-                    int ack = WireIO.ReadInt32BE(ssl);
-                    if (ack != WireConstants.Magic) throw new IOException("Tabule nepotvrdila spojení.");
-                    if (onPairedUri != null && !string.IsNullOrEmpty(receivedSecret))
-                    {
-                        string uri = PairCode.BuildUri(cfg.Host, cfg.Port, expectedFp, receivedSecret);
-                        onPairedUri(uri);
-                    }
-                }
-                else
-                {
-                    WireIO.WriteJavaUtf(ssl, cfg.Secret);
-                    ssl.Flush();
-                    int ack = WireIO.ReadInt32BE(ssl);
-                    if (ack != WireConstants.Magic) throw new IOException("Tabule připojení odmítla (neplatný párovací klíč).");
-                }
+                if (cfg.AudioEnabled) audioReader = StartAudioPipeline(ffmpegPath);
+                else DiagAudio = "vypnuto uživatelem";
 
-                // 4. Compute monitor geometry (aligned to 16)
-                Screen[] screens = Screen.AllScreens;
-                int screenIdx = cfg.ScreenIndex;
-                if (screenIdx < 0 || screenIdx >= screens.Length) screenIdx = 0;
-                Screen screen = screens[screenIdx];
-                int rawW = screen.Bounds.Width;
-                int rawH = screen.Bounds.Height;
-                double scale = Math.Min(1.0, (double)cfg.Quality.MaxSide / Math.Max(1, Math.Max(rawW, rawH)));
-                int width = Math.Max(16, ((int)(rawW * scale) / 16) * 16);
-                int height = Math.Max(16, ((int)(rawH * scale) / 16) * 16);
-
-                // 5. Send video header
-                Report("Hlavička videa", "Spouštím přenos " + width + " × " + height + "…");
-                WireIO.WriteInt32BE(ssl, WireConstants.Magic);
-                WireIO.WriteInt32BE(ssl, width);
-                WireIO.WriteInt32BE(ssl, height);
-                ssl.Flush();
-                tcp.SendTimeout = 0;
-                tcp.ReceiveTimeout = 0;
-
-                // 6. Start network writer thread
-                Stopwatch clock = Stopwatch.StartNew();
-                long lastWriteMs = clock.ElapsedMilliseconds;
-                netThread = new Thread(delegate()
-                {
-                    byte[] scratch = new byte[128 * 1024];
-                    long fpsWinStart = clock.ElapsedMilliseconds;
-                    long fpsWinCount = 0;
-                    long writeMsSum = 0;
-                    long writeOps = 0;
-                    try
-                    {
-                        while (running && !queue.IsClosed)
-                        {
-                            Packet pkt = queue.Poll(1500);
-                            long now = clock.ElapsedMilliseconds;
-                            if (pkt == null)
-                            {
-                                if (running && now - lastWriteMs >= 1800)
-                                {
-                                    WireIO.WriteHeartbeat(ssl);
-                                    lastWriteMs = clock.ElapsedMilliseconds;
-                                }
-                                continue;
-                            }
-                            long t0 = clock.ElapsedMilliseconds;
-                            scratch = WireIO.WritePacketSingleRecord(ssl, scratch, pkt);
-                            long dt = clock.ElapsedMilliseconds - t0;
-                            lastWriteMs = clock.ElapsedMilliseconds;
-                            if (!pkt.IsAudio && !pkt.IsConfig)
-                            {
-                                Interlocked.Increment(ref DiagVideoFrames);
-                                fpsWinCount++;
-                            }
-                            Interlocked.Exchange(ref DiagDrops, queue.DroppedVideo);
-                            writeMsSum += dt;
-                            writeOps++;
-                            if (lastWriteMs - fpsWinStart >= 1000)
-                            {
-                                DiagFps = (int)Math.Round(fpsWinCount * 1000.0 / Math.Max(1, lastWriteMs - fpsWinStart));
-                                DiagAvgWriteMs = (int)(writeMsSum / Math.Max(1, writeOps));
-                                fpsWinStart = lastWriteMs;
-                                fpsWinCount = 0;
-                                writeMsSum = 0;
-                                writeOps = 0;
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        if (running) netFailure = ex;
-                    }
-                    finally
-                    {
-                        queue.Close();
-                    }
-                });
-                netThread.IsBackground = true;
-                netThread.Priority = ThreadPriority.AboveNormal;
-                netThread.Name = "tabule-win-net";
-                netThread.Start();
-
-                // 7. Start WASAPI Loopback + AAC audio encoder (optional, isolated from video)
-                if (cfg.AudioEnabled)
-                {
-                    audioReaderThread = StartAudioPipeline(ffmpegPath, clock);
-                }
-                else
-                {
-                    DiagAudio = "vypnuto uživatelem";
-                }
-
-                // 8. Start video capture (try GPU ddagrab first, automatic fallback to gdigrab)
-                bool ok = RunVideoPipeline(ffmpegPath, screenIdx, screen, width, height, true, clock, delegate() { return netFailure; });
-                if (!ok && running && netFailure == null)
-                {
-                    Report("Přepínám na GDI zachytávání", "GPU zachytávání nedostupné, přepínám na GDI…");
-                    RunVideoPipeline(ffmpegPath, screenIdx, screen, width, height, false, clock, delegate() { return netFailure; });
-                }
-
-                if (netFailure != null) throw netFailure;
+                RunCaptureLoop(ffmpegPath);
             }
             catch (Exception ex)
             {
                 if (running)
                 {
                     DiagError = ex.GetType().Name + ": " + ex.Message;
-                    if (DiagPhase == "vysílání" && Interlocked.Read(ref DiagVideoFrames) > 0 && (ex is IOException || ex is SocketException))
-                    {
-                        Report("ukončeno", "Vysílání ukončeno (tabule příjem zavřela nebo sdílení převzal jiný uživatel).");
-                    }
-                    else
-                    {
-                        string hint = LocalNet.SubnetMismatchHint(cfg.Host);
-                        string msg = "Přenos se nezdařil (" + DiagPhase + "): " + ex.Message;
-                        if (!string.IsNullOrEmpty(hint)) msg += "\r\n" + hint;
-                        Report("chyba", msg);
-                    }
+                    Finish("Sdílení se nepodařilo: " + ex.Message, true);
                 }
             }
             finally
             {
+                if (running) Finish("Zachytávání obrazovky skončilo.", true);
                 running = false;
-                if (queue != null) queue.Close();
-                KillProcess(ref videoProc);
-                KillProcess(ref audioProc);
+                if (linkThread != null) { try { linkThread.Join(2000); } catch { } }
+                if (audioReader != null) { try { audioReader.Join(800); } catch { } }
                 if (wasapi != null) { try { wasapi.Dispose(); } catch { } wasapi = null; }
-                if (ssl != null) { try { ssl.Close(); } catch { } ssl = null; }
-                if (tcp != null) { try { tcp.Close(); } catch { } tcp = null; }
-                if (netThread != null) { try { netThread.Join(1000); } catch { } }
-                if (audioReaderThread != null) { try { audioReaderThread.Join(800); } catch { } }
-                if (onStopped != null) onStopped();
+                if (speakerMutedBefore.HasValue && !speakerMutedBefore.Value) Native.SetSpeakerMute(false);
+                if (onStopped != null) onStopped(stopReason ?? "Vysílání ukončeno.", stopIsError);
             }
         }
 
-        private bool RunVideoPipeline(string ffmpegPath, int screenIdx, Screen screen, int width, int height,
-            bool useDda, Stopwatch clock, Func<Exception> getNetFailure)
+        private Rectangle CurrentSourceRect()
         {
-            int fps = cfg.Quality.Fps;
-            int br = cfg.Quality.BitrateKbps;
-            int buf = Math.Max(1000, br / 2);
-            string args;
-            if (useDda)
+            if (cfg.WindowHandle != IntPtr.Zero)
             {
-                args = string.Format(CultureInfo.InvariantCulture,
-                    "-hide_banner -loglevel error -init_hw_device d3d11va -filter_complex \"ddagrab=output_idx={0}:framerate={1}:draw_mouse=1,hwdownload,format=bgra,scale={2}:{3}:flags=fast_bilinear,format=yuv420p\" " +
-                    "-c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -bf 0 -g 150 -keyint_min 30 -b:v {4}k -maxrate {4}k -bufsize {5}k -x264-params \"repeat-headers=1:scenecut=0:aud=1:slices=1\" -f h264 pipe:1",
-                    screenIdx, fps, width, height, br, buf);
-                DiagCapture = "ddagrab + libx264 baseline (" + width + "x" + height + "@" + fps + ", " + (br / 1000) + " Mb/s)";
+                if (!Native.IsWindow(cfg.WindowHandle)) return Rectangle.Empty;
+                return Native.WindowBounds(cfg.WindowHandle);
+            }
+            Screen[] screens = Screen.AllScreens;
+            int idx = cfg.ScreenIndex < 0 || cfg.ScreenIndex >= screens.Length ? 0 : cfg.ScreenIndex;
+            return screens[idx].Bounds;
+        }
+
+        private void Offer(Packet p)
+        {
+            Link l = link;
+            if (l == null || l.Dead) return;
+            if (p.IsControl && !l.V2) return;
+            l.Queue.Offer(p);
+        }
+
+        // ------------------------------------------------------------------ network link
+
+        private Link Connect(bool resume)
+        {
+            BoardEntry b = cfg.Board;
+            TcpClient tcp;
+            SslStream ssl;
+            try
+            {
+                ssl = OpenTls(b.Host, b.Port, b.Fingerprint, resume ? 4000 : 6000, out tcp);
+            }
+            catch (Exception ex)
+            {
+                if (ex is AuthenticationException) throw;
+                Report("hledám tabuli", "Hledám tabuli v síti (mohla změnit adresu)…");
+                DiscoveryOffer o = DiscoveryOffer.FindByFingerprint(b.Fingerprint, 1500);
+                if (o == null || (o.Ip == b.Host && o.Port == b.Port)) throw;
+                b.Host = o.Ip;
+                b.Port = o.Port;
+                if (onBoardUpdated != null) onBoardUpdated(b.Clone());
+                ssl = OpenTls(b.Host, b.Port, b.Fingerprint, 6000, out tcp);
+            }
+            Link l = new Link();
+            l.Tcp = tcp;
+            l.Ssl = ssl;
+            try
+            {
+                if (b.HasV2Key)
+                {
+                    List<string> caps = new List<string>();
+                    caps.Add(Proto2.CapCtl);
+                    caps.Add(Proto2.CapFmt);
+                    if (cfg.AllowTouch) caps.Add(Proto2.CapTouch);
+                    if (resume) caps.Add(Proto2.CapResume);
+                    ClientResult r = Proto2.Hello(ssl, "KEY", b.DeviceId, b.DeviceKey, cfg.DeviceName, caps);
+                    l.V2 = true;
+                    if (r.BoardName != b.Name)
+                    {
+                        b.Name = r.BoardName;
+                        BoardName = r.BoardName;
+                        if (onBoardUpdated != null) onBoardUpdated(b.Clone());
+                    }
+                }
+                else if (b.LegacySecret != null)
+                {
+                    Proto2.Legacy(ssl, b.LegacySecret);
+                    l.V2 = false;
+                }
+                else
+                {
+                    throw new ProtoException(Proto2.ErrAuth, "Tabule není spárována. Zadejte PIN nebo vložte kód z tabule.");
+                }
+                Proto2.WriteHeader(ssl, curW, curH);
+                if (l.V2)
+                {
+                    tcp.ReceiveTimeout = 45000;
+                    Proto2.AwaitGo(ssl, delegate { Report("čekám na schválení", "Čekám na schválení převzetí na tabuli…"); });
+                }
+                tcp.ReceiveTimeout = 0;
+                tcp.SendTimeout = 0;
+                return l;
+            }
+            catch
+            {
+                l.Close();
+                throw;
+            }
+        }
+
+        private void ManageLink()
+        {
+            bool resume = false;
+            int reconnectUntil = 0;
+            int attempt = 0;
+            while (running)
+            {
+                Link l;
+                try
+                {
+                    Report(resume ? "obnovuji spojení" : "připojení", resume ? null : "Připojuji se k " + cfg.Board.Name + "…");
+                    l = Connect(resume);
+                }
+                catch (ProtoException ex)
+                {
+                    Finish(ex.Message, ex.Code != Proto2.ErrBusy);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (!running) return;
+                    if (resume && Environment.TickCount - reconnectUntil < 0)
+                    {
+                        attempt++;
+                        Report("obnovuji spojení", "Spojení s tabulí přerušeno — obnovuji (pokus " + attempt + ")…");
+                        Thread.Sleep(Math.Min(3000, 700 * attempt));
+                        continue;
+                    }
+                    DiagError = ex.GetType().Name + ": " + ex.Message;
+                    string hint = LocalNet.SubnetMismatchHint(cfg.Board.Host);
+                    Finish("Připojení k tabuli se nezdařilo: " + ex.Message + (string.IsNullOrEmpty(hint) ? "" : "\r\n" + hint), true);
+                    return;
+                }
+
+                byte[] vcfg = lastVideoConfig;
+                if (vcfg != null) l.Queue.Offer(new Packet(WireConstants.FlagCodecConfig, 0, vcfg));
+                byte[] acfg = lastAudioConfig;
+                if (acfg != null) l.Queue.Offer(new Packet(WireConstants.FlagAudio | WireConstants.FlagCodecConfig, 0, acfg));
+                if (paused && l.V2) l.Queue.Offer(Proto2.Control(Proto2.CtlPause));
+                l.Queue.RequireKeyFrame();
+                link = l;
+                if (reconnecting && onNotice != null) onNotice("Spojení s tabulí obnoveno.");
+                reconnecting = false;
+                attempt = 0;
+                Report("vysílání", "Vysílám na " + BoardName + " · " + curW + " × " + curH + (cfg.AudioEnabled ? " · obraz + zvuk" : " · jen obraz") + (l.V2 ? "" : " · starší tabule") + " · šifrováno");
+
+                Thread writer = new Thread(delegate() { WriteLoop(l); });
+                writer.IsBackground = true;
+                writer.Priority = ThreadPriority.AboveNormal;
+                writer.Name = "tabule-win-net";
+                writer.Start();
+                if (l.V2)
+                {
+                    Thread reader = new Thread(delegate() { ReadLoop(l); });
+                    reader.IsBackground = true;
+                    reader.Name = "tabule-win-ctl";
+                    reader.Start();
+                }
+                while (running && !l.Dead)
+                {
+                    Thread.Sleep(300);
+                    long since = Interlocked.Read(ref l.WritingSince);
+                    if (since != 0 && Environment.TickCount - (int)since > 6000)
+                    {
+                        DiagError = "Zápis do sítě se zasekl (>6 s)";
+                        l.Close();
+                    }
+                }
+                if (!running) { SayBye(l); link = null; return; }
+                l.Close();
+                link = null;
+                try { writer.Join(1000); } catch { }
+                string notice = l.EndNotice;
+                if (notice == Proto2.CtlEndTakeover) { Finish("Sdílení převzal jiný prezentující.", false); return; }
+                if (notice == Proto2.CtlEndClosed) { Finish("Prezentaci ukončila tabule.", false); return; }
+                if (notice == Proto2.CtlEndRevoked) { Finish("Tabule tento notebook odvolala. Spárujte jej znovu.", true); return; }
+                if (!l.V2) { Finish("Vysílání ukončeno (tabule příjem zavřela nebo sdílení převzal jiný uživatel).", false); return; }
+                resume = true;
+                reconnecting = true;
+                reconnectUntil = Environment.TickCount + ReconnectWindowMs;
+                if (onNotice != null) onNotice("Spojení s tabulí přerušeno — obnovuji…");
+                Report("obnovuji spojení", "Spojení s tabulí přerušeno — obnovuji…");
+            }
+        }
+
+        private void WriteLoop(Link l)
+        {
+            byte[] scratch = new byte[256 * 1024];
+            Stopwatch clock = Stopwatch.StartNew();
+            long lastWrite = 0, fpsStart = 0, fpsFrames = 0, writeSum = 0, writes = 0;
+            try
+            {
+                while (!l.Dead)
+                {
+                    Packet pkt = l.Queue.Poll(1500);
+                    long now = clock.ElapsedMilliseconds;
+                    if (pkt == null)
+                    {
+                        if (now - lastWrite >= 1800)
+                        {
+                            Interlocked.Exchange(ref l.WritingSince, Environment.TickCount | 1);
+                            WireIO.WriteHeartbeat(l.Ssl);
+                            Interlocked.Exchange(ref l.WritingSince, 0);
+                            lastWrite = clock.ElapsedMilliseconds;
+                        }
+                        continue;
+                    }
+                    Interlocked.Exchange(ref l.WritingSince, Environment.TickCount | 1);
+                    scratch = WireIO.WritePacketSingleRecord(l.Ssl, scratch, pkt);
+                    Interlocked.Exchange(ref l.WritingSince, 0);
+                    lastWrite = clock.ElapsedMilliseconds;
+                    writeSum += lastWrite - now;
+                    writes++;
+                    if (!pkt.IsAudio && !pkt.IsConfig && !pkt.IsControl)
+                    {
+                        Interlocked.Increment(ref DiagVideoFrames);
+                        fpsFrames++;
+                    }
+                    Interlocked.Exchange(ref DiagDrops, l.Queue.DroppedVideo);
+                    if (lastWrite - fpsStart >= 1000)
+                    {
+                        DiagFps = (int)Math.Round(fpsFrames * 1000.0 / Math.Max(1, lastWrite - fpsStart));
+                        DiagAvgWriteMs = (int)(writeSum / Math.Max(1, writes));
+                        fpsStart = lastWrite; fpsFrames = 0; writeSum = 0; writes = 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (running) DiagError = "Síť: " + ex.Message;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref l.WritingSince, 0);
+                l.Close();
+            }
+        }
+
+        /// <summary>Back-channel from the board: end notices, key-frame requests, touch input.</summary>
+        private void ReadLoop(Link l)
+        {
+            try
+            {
+                byte[] hdr;
+                while (!l.Dead)
+                {
+                    hdr = WireIO.ReadExact(l.Ssl, WireConstants.HeaderSize);
+                    int len = (hdr[0] << 24) | (hdr[1] << 16) | (hdr[2] << 8) | hdr[3];
+                    int flags = (hdr[4] << 24) | (hdr[5] << 16) | (hdr[6] << 8) | hdr[7];
+                    if (len < 0 || len > 4096) throw new IOException("Neplatná zpráva tabule.");
+                    byte[] payload = len > 0 ? WireIO.ReadExact(l.Ssl, len) : new byte[0];
+                    if ((flags & Proto2.FlagControl) == 0) continue;
+                    string cmd = Encoding.UTF8.GetString(payload);
+                    if (cmd.StartsWith("end:", StringComparison.Ordinal))
+                    {
+                        l.EndNotice = cmd;
+                        l.Close();
+                    }
+                    else if (cmd.StartsWith("t:", StringComparison.Ordinal))
+                    {
+                        HandleTouch(cmd);
+                    }
+                    else if (cmd == Proto2.CtlKeyFrame)
+                    {
+                        // GOP is 1 s, the next key frame is close; nothing to do.
+                    }
+                }
+            }
+            catch { }
+            finally { l.Close(); }
+        }
+
+        private void HandleTouch(string cmd)
+        {
+            if (!cfg.AllowTouch) return;
+            int[] t = Proto2.ParseTouch(cmd);
+            if (t == null) return;
+            Rectangle r = cfg.WindowHandle != IntPtr.Zero ? Native.WindowBounds(cfg.WindowHandle) : captureRect;
+            if (r.Width <= 0 || r.Height <= 0) return;
+            int x = r.Left + (int)Math.Round(t[1] / 65535.0 * (r.Width - 1));
+            int y = r.Top + (int)Math.Round(t[2] / 65535.0 * (r.Height - 1));
+            try { Native.InjectMouse(x, y, (char)t[0]); } catch { }
+        }
+
+        // ------------------------------------------------------------------ video capture
+
+        private static string encoderList;
+
+        private static bool EncoderAvailable(string ffmpegPath, string id)
+        {
+            if (id == "libx264") return true;
+            if (encoderList == null)
+            {
+                try
+                {
+                    using (Process p = StartHiddenProcess(ffmpegPath, "-hide_banner -encoders", false, true))
+                    {
+                        encoderList = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(5000);
+                    }
+                }
+                catch { encoderList = ""; }
+            }
+            return encoderList.Contains(" " + id + " ");
+        }
+
+        private List<string> EncoderCandidates(string ffmpegPath)
+        {
+            List<string> list = new List<string>();
+            if (cfg.Encoder != null && cfg.Encoder != "auto")
+            {
+                if (EncoderAvailable(ffmpegPath, cfg.Encoder)) list.Add(cfg.Encoder);
             }
             else
             {
-                args = string.Format(CultureInfo.InvariantCulture,
-                    "-hide_banner -loglevel error -f gdigrab -framerate {0} -offset_x {1} -offset_y {2} -video_size {3}x{4} -draw_mouse 1 -i desktop " +
-                    "-vf \"scale={5}:{6}:flags=fast_bilinear,format=yuv420p\" -pix_fmt yuv420p " +
-                    "-c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -bf 0 -g 150 -keyint_min 30 -b:v {7}k -maxrate {7}k -bufsize {8}k -x264-params \"repeat-headers=1:scenecut=0:aud=1:slices=1\" -f h264 pipe:1",
-                    fps, screen.Bounds.X, screen.Bounds.Y, screen.Bounds.Width, screen.Bounds.Height, width, height, br, buf);
-                DiagCapture = "gdigrab + libx264 baseline (" + width + "x" + height + "@" + fps + ", " + (br / 1000) + " Mb/s)";
+                string[] order = new string[] { "h264_nvenc", "h264_qsv", "h264_amf" };
+                foreach (string e in order) if (EncoderAvailable(ffmpegPath, e)) list.Add(e);
             }
+            if (!list.Contains("libx264")) list.Add("libx264");
+            return list;
+        }
 
-            Process p = StartHiddenProcess(ffmpegPath, args, false, true);
+        /// <summary>ffmpeg encoder arguments: 1 s GOP (0.6 used 5 s → up to 5 s freezes after packet loss), no B-frames.</summary>
+        public static string EncoderArgs(string id, int kbps)
+        {
+            int buf = Math.Max(1000, kbps / 2);
+            string rate = string.Format(CultureInfo.InvariantCulture, "-b:v {0}k -maxrate {0}k -bufsize {1}k", kbps, buf);
+            switch (id)
+            {
+                case "h264_nvenc":
+                    return "-c:v h264_nvenc -preset p1 -tune ull -zerolatency 1 -delay 0 -rc cbr " + rate + " -bf 0 -g 30 -forced-idr 1 -profile:v main -aud 1";
+                case "h264_qsv":
+                    return "-c:v h264_qsv -preset veryfast -look_ahead 0 -async_depth 1 " + rate + " -bf 0 -g 30 -idr_interval 0 -profile:v main -aud 1";
+                case "h264_amf":
+                    return "-c:v h264_amf -usage ultralowlatency -quality speed -rc cbr " + rate + " -bf 0 -g 30 -header_insertion_mode idr -aud 1";
+                case "h264_mf":
+                    return "-c:v h264_mf -hw_encoding 1 -rate_control cbr -scenario display_remoting " + rate + " -bf 0 -g 30";
+                default:
+                    return "-c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -bf 0 -g 30 -keyint_min 30 " + rate
+                        + " -x264-params \"repeat-headers=1:scenecut=0:aud=1:slices=1\"";
+            }
+        }
+
+        private string CaptureArgs(string method, string encoderId, int w, int h)
+        {
+            int fps = cfg.Quality.Fps;
+            string pix = encoderId == "libx264" ? "yuv420p" : "nv12";
+            string scale = string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}:flags=bilinear,format={2}", w, h, pix);
+            if (method == "ddagrab")
+            {
+                Screen[] screens = Screen.AllScreens;
+                int idx = cfg.ScreenIndex < 0 || cfg.ScreenIndex >= screens.Length ? 0 : cfg.ScreenIndex;
+                int adapter, output;
+                if (!Native.FindDxgiOutput(screens[idx].DeviceName, out adapter, out output)) { adapter = 0; output = idx; }
+                DiagCapture = "ddagrab (GPU " + adapter + ", výstup " + output + ")";
+                return string.Format(CultureInfo.InvariantCulture,
+                    "-hide_banner -loglevel error -init_hw_device d3d11va=tl:{0} -filter_hw_device tl -filter_complex \"ddagrab=output_idx={1}:framerate={2}:draw_mouse=1,hwdownload,format=bgra,{3}\"",
+                    adapter, output, fps, scale);
+            }
+            if (method == "gdigrab-window")
+            {
+                DiagCapture = "gdigrab okno";
+                return string.Format(CultureInfo.InvariantCulture, "-hide_banner -loglevel error -f gdigrab -framerate {0} -draw_mouse 1 -i {1} -vf \"{2}\"",
+                    fps, Native.QuoteArg("title=" + cfg.WindowTitle), scale);
+            }
+            Rectangle r = CurrentSourceRect();
+            DiagCapture = "gdigrab oblast";
+            return string.Format(CultureInfo.InvariantCulture,
+                "-hide_banner -loglevel error -f gdigrab -framerate {0} -offset_x {1} -offset_y {2} -video_size {3}x{4} -draw_mouse 1 -i desktop -vf \"{5}\"",
+                fps, r.X, r.Y, r.Width - (r.Width % 2), r.Height - (r.Height % 2), scale);
+        }
+
+        private List<string> CaptureMethods()
+        {
+            List<string> m = new List<string>();
+            if (cfg.WindowHandle != IntPtr.Zero) { m.Add("gdigrab-window"); m.Add("gdigrab-region"); }
+            else { m.Add("ddagrab"); m.Add("gdigrab-region"); }
+            return m;
+        }
+
+        /// <summary>
+        /// Finds a working capture+encoder combination (GPU first, CPU fallback) and keeps capture running for the
+        /// whole session, restarting ffmpeg when it exits (resolution change, UAC/secure desktop, window resized).
+        /// </summary>
+        private void RunCaptureLoop(string ffmpegPath)
+        {
+            string workingMethod = null, workingEncoder = null;
+            int restarts = 0;
+            int restartWindowStart = Environment.TickCount;
+            string lastError = "";
+            while (running)
+            {
+                // geometry may have changed (monitor resolution, window size)
+                Rectangle rect = CurrentSourceRect();
+                if (rect.Width < 16 || rect.Height < 16)
+                {
+                    if (cfg.WindowHandle != IntPtr.Zero && !Native.IsWindow(cfg.WindowHandle)) { Finish("Sdílené okno bylo zavřeno.", false); return; }
+                    Thread.Sleep(500);
+                    continue;
+                }
+                captureRect = rect;
+                int[] g = VideoGeometry.Fit(rect.Width, rect.Height, cfg.Quality.MaxSide);
+                Link l = link;
+                if ((g[0] != curW || g[1] != curH) && (l == null || l.V2))
+                {
+                    curW = g[0];
+                    curH = g[1];
+                    lastVideoConfig = null;
+                    if (l != null)
+                    {
+                        l.Queue.ClearVideo();
+                        l.Queue.Offer(Proto2.Control(Proto2.Fmt(curW, curH)));
+                    }
+                }
+
+                bool produced = false;
+                if (workingMethod != null)
+                {
+                    produced = RunPipeline(ffmpegPath, workingMethod, workingEncoder, out lastError);
+                }
+                else
+                {
+                    foreach (string method in CaptureMethods())
+                    {
+                        foreach (string enc in EncoderCandidates(ffmpegPath))
+                        {
+                            if (!running) return;
+                            Report("spouštím zachytávání", "Spouštím zachytávání (" + method + " + " + Encoders.Describe(enc) + ")…");
+                            if (RunPipeline(ffmpegPath, method, enc, out lastError))
+                            {
+                                workingMethod = method;
+                                workingEncoder = enc;
+                                produced = true;
+                                break;
+                            }
+                        }
+                        if (produced) break;
+                    }
+                }
+                if (!running) return;
+                if (workingMethod == null)
+                {
+                    throw new IOException("Zachytávání obrazovky (ffmpeg) nevydalo žádný snímek" + (lastError.Length > 0 ? ": " + lastError : "."));
+                }
+                // ffmpeg ended after producing frames → restart (bounded)
+                if (Environment.TickCount - restartWindowStart > 60000) { restartWindowStart = Environment.TickCount; restarts = 0; }
+                restarts++;
+                if (restarts > 6) throw new IOException("Zachytávání obrazovky se opakovaně zastavilo: " + lastError);
+                if (!produced) { workingMethod = null; workingEncoder = null; }
+                Report("obnovuji zachytávání", "Obnovuji zachytávání obrazovky…");
+                Thread.Sleep(400);
+            }
+        }
+
+        /// <summary>Runs one ffmpeg video process until it exits. Returns true if it produced at least one frame.</summary>
+        private bool RunPipeline(string ffmpegPath, string method, string encoder, out string error)
+        {
+            error = "";
+            int w = curW, h = curH;
+            string args = CaptureArgs(method, encoder, w, h) + " " + EncoderArgs(encoder, cfg.Quality.BitrateKbps) + " -f h264 pipe:1";
+            string captureDesc = DiagCapture + " + " + Encoders.Describe(encoder) + " (" + w + "x" + h + "@" + cfg.Quality.Fps + ", " + (cfg.Quality.BitrateKbps / 1000) + " Mb/s)";
+            Process p;
+            try { p = StartHiddenProcess(ffmpegPath, args, false, true); }
+            catch (Exception ex) { error = ex.Message; return false; }
             videoProc = p;
             StringBuilder stderr = new StringBuilder();
             Thread errThread = new Thread(delegate()
@@ -474,55 +938,66 @@ namespace TabuleLinkWin
                 try
                 {
                     string line;
-                    while ((line = p.StandardError.ReadLine()) != null)
-                    {
-                        if (stderr.Length < 1024) stderr.AppendLine(line);
-                    }
+                    while ((line = p.StandardError.ReadLine()) != null) { lock (stderr) { if (stderr.Length < 1500) stderr.AppendLine(line); } }
                 }
                 catch { }
             });
             errThread.IsBackground = true;
             errThread.Start();
 
-            bool gotAnyFrame = false;
+            bool gotFrame = false;
+            int startTick = Environment.TickCount;
+            System.Threading.Timer firstFrameWatchdog = new System.Threading.Timer(delegate
+            {
+                if (!gotFrame) { try { if (!p.HasExited) p.Kill(); } catch { } }
+            }, null, 7000, Timeout.Infinite);
+
             AnnexBParser parser = new AnnexBParser(delegate(int flags, byte[] data)
             {
-                if (!gotAnyFrame && (flags & WireConstants.FlagCodecConfig) == 0)
+                if ((flags & WireConstants.FlagCodecConfig) != 0)
                 {
-                    gotAnyFrame = true;
-                    Report("vysílání", "Vysílám na " + cfg.Host + " · " + width + " × " + height
-                        + (cfg.AudioEnabled ? " · obraz + zvuk" : " · jen obraz") + " · šifrováno");
+                    lastVideoConfig = data;
+                    Offer(new Packet(flags, 0, data));
+                    return;
                 }
-                long ptsUs = clock.ElapsedTicks * 1000000L / Stopwatch.Frequency;
-                queue.Offer(new Packet(flags, ptsUs, data));
+                if (!gotFrame)
+                {
+                    gotFrame = true;
+                    DiagCapture = captureDesc;
+                }
+                if (paused) return;
+                Offer(new Packet(flags, (long)(Environment.TickCount - startTick) * 1000L, data));
             });
 
-            byte[] ioBuf = new byte[65536];
-            Stream stdout = p.StandardOutput.BaseStream;
-            while (running && getNetFailure() == null)
+            try
             {
-                int n = stdout.Read(ioBuf, 0, ioBuf.Length);
-                if (n <= 0) break;
-                parser.Push(ioBuf, 0, n);
-            }
-            parser.Flush();
-
-            KillProcess(ref videoProc);
-            try { errThread.Join(300); } catch { }
-
-            if (!gotAnyFrame && running && getNetFailure() == null)
-            {
-                if (!useDda)
+                byte[] ioBuf = new byte[65536];
+                Stream stdout = p.StandardOutput.BaseStream;
+                while (running)
                 {
-                    string errText = stderr.ToString().Trim();
-                    throw new IOException("Zachytávání obrazovky (ffmpeg) nevydalo žádný snímek" + (errText.Length > 0 ? ": " + errText : "."));
+                    int n = stdout.Read(ioBuf, 0, ioBuf.Length);
+                    if (n <= 0) break;
+                    parser.Push(ioBuf, 0, n);
                 }
-                return false; // allow automatic fallback to gdigrab
+                parser.Flush();
             }
-            return true;
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+            finally
+            {
+                firstFrameWatchdog.Dispose();
+                KillProcess(ref videoProc);
+                try { errThread.Join(300); } catch { }
+            }
+            lock (stderr) { if (stderr.Length > 0) error = stderr.ToString().Trim(); }
+            return gotFrame;
         }
 
-        private Thread StartAudioPipeline(string ffmpegPath, Stopwatch clock)
+        // ------------------------------------------------------------------ audio
+
+        private Thread StartAudioPipeline(string ffmpegPath)
         {
             try
             {
@@ -533,27 +1008,21 @@ namespace TabuleLinkWin
                     wasapi.SampleRate);
                 Process ap = StartHiddenProcess(ffmpegPath, args, true, true);
                 audioProc = ap;
-
-                DiagAudio = wasapi.FormatDescription + " → AAC 48 kHz";
+                DiagAudio = wasapi.FormatDescription + " → AAC 48 kHz" + (cfg.MuteSpeakers ? " · reproduktory ztlumeny" : "");
                 Stream stdin = ap.StandardInput.BaseStream;
-
                 AdtsParser adts = new AdtsParser(delegate(int flags, byte[] data)
                 {
-                    long ptsUs = clock.ElapsedTicks * 1000000L / Stopwatch.Frequency;
-                    queue.Offer(new Packet(flags, ptsUs, data));
-                    if ((flags & WireConstants.FlagCodecConfig) == 0)
-                    {
-                        Interlocked.Increment(ref DiagAudioFrames);
-                    }
+                    if ((flags & WireConstants.FlagCodecConfig) != 0) lastAudioConfig = data;
+                    Offer(new Packet(flags, 0, data));
+                    if ((flags & WireConstants.FlagCodecConfig) == 0) Interlocked.Increment(ref DiagAudioFrames);
                 });
-
                 Thread reader = new Thread(delegate()
                 {
                     byte[] buf = new byte[8192];
                     try
                     {
                         Stream aOut = ap.StandardOutput.BaseStream;
-                        while (running && !queue.IsClosed)
+                        while (running)
                         {
                             int n = aOut.Read(buf, 0, buf.Length);
                             if (n <= 0) break;
@@ -566,16 +1035,14 @@ namespace TabuleLinkWin
                 reader.Priority = ThreadPriority.AboveNormal;
                 reader.Name = "tabule-win-aac";
                 reader.Start();
-
                 wasapi.Start(
                     delegate(byte[] pcm, int len)
                     {
-                        if (!running || queue.IsClosed) return;
+                        if (!running) return;
                         try { stdin.Write(pcm, 0, len); stdin.Flush(); } catch { }
                     },
-                    cfg.GetVolumePercent != null ? cfg.GetVolumePercent : (Func<int>)delegate() { return 70; },
-                    delegate(Exception ex) { DiagAudio = "chyba zvuku: " + ex.Message; }
-                );
+                    cfg.GetVolumePercent ?? (Func<int>)delegate() { return 70; },
+                    delegate(Exception ex) { DiagAudio = "chyba zvuku: " + ex.Message; });
                 return reader;
             }
             catch (Exception ex)
@@ -607,20 +1074,8 @@ namespace TabuleLinkWin
         {
             Process local = Interlocked.Exchange(ref p, null);
             if (local == null) return;
-            try
-            {
-                if (!local.HasExited) local.Kill();
-            }
-            catch { }
+            try { if (!local.HasExited) local.Kill(); } catch { }
             try { local.Dispose(); } catch { }
-        }
-
-        private static bool FixedTimeEquals(string a, string b)
-        {
-            if (a == null || b == null || a.Length != b.Length) return false;
-            int diff = 0;
-            for (int i = 0; i < a.Length; i++) diff |= (a[i] ^ b[i]);
-            return diff == 0;
         }
     }
 }
