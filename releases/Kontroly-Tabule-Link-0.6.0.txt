@@ -3,7 +3,7 @@ TABULE LINK 0.6.0 — KONTROLY (ANDROID + WINDOWS)
 
 Datum: 23. 11. 2026
 Android balíček: cz.ideamirror.app, versionCode 9, versionName 0.6.0
-Windows aplikace: TabuleLink-Windows-0.6.0.exe (C# / .NET Framework 4.8, x64)
+Windows aplikace: TabuleLink-Windows-0.6.1.exe (C# / .NET Framework 4.8, x64)
 
 Novinky v 0.6.0 (včetně Windows verze a LAN PINu z 0.5.0)
 1. Střídání více klientů / převzetí sdílení (styl USB tlačítka):
@@ -36,7 +36,7 @@ Ověření na PC
   zipalign a aapt2 dump badging ověřeny.
 - Windows testy (.\Test-Windows.ps1): PASS — 95 kontrol (včetně reálného
   parsování ffmpeg libx264 Annex-B a ffmpeg AAC ADTS).
-- Windows sestavení (.\Build-Windows.ps1): úspěšné, 0 varování.
+- Windows sestavení (.\Build-Windows.ps1): úspěšné, 0 varování. Ověřeno reálné spuštění okna TabuleLink-Windows-0.6.1.exe na Windows (HasExited=False, MainWindowTitle ověřen).
 
 Omezení ověření:
 Živý přenos Windows → Huawei IdeaHub Pro 65, převzetí sdílení mezi dvěma
@@ -45,4 +45,4 @@ je třeba ověřit přímo na zařízeních.
 
 Kontrolní součty SHA-256:
 Tabule-Link-0.6.0.apk           3eff9a1adaf3722307ebfaebe19f70a6ea61e984b28b289b8b4f3fcfcac40f3e
-TabuleLink-Windows-0.6.0.exe    0f09f08270233998e6a2a5bc9f4d05bd216903b40c86d313de181913288de13b
+TabuleLink-Windows-0.6.1.exe    d8827cfc86086a513f0b0fb47f718ba344012222a64f5c80dd5e0d40eebfde3a

@@ -11,7 +11,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
   - 4 režimy kvality obrazu (H.264 nízkolatenční profil, 30 fps): `960p · 3 Mb/s`, `1280p · 5 Mb/s`, `1600p · 8 Mb/s`, `1920p · 12 Mb/s`.
   - Přenos interního zvuku aplikací (AAC-LC 48 kHz stereo, Android 10+) s živou regulací hlasitosti na tabletu i na tabuli (nemění systémovou hlasitost videokonference tabule).
   - Přímé **TLS 1.2** spojení s ověřením SHA-256 otisku certifikátu, stálý port `42521`, uložené spojení bez opakovaného skenování QR kódu, **LAN vyhledávání + 6místný PIN** pro snadné spárování Windows notebooku.
-- **Windows vysílač (`releases/TabuleLink-Windows-0.6.0.exe`)**
+- **Windows vysílač (`releases/TabuleLink-Windows-0.6.1.exe`)**
   - Nativní Windows 10/11 aplikace (.NET Framework 4.8, bez instalace Pythonu) ve stejném tmavém designu.
   - Automaticky najde tabuli v LAN → první spárování 6místným PINem (nebo ruční vložení `tabulelink://…`) → další připojení i převzetí tabule jedním kliknutím.
   - Výběr monitoru, 4 režimy kvality (`960p`–`1920p`), rychlé GPU zachytávání plochy (`ddagrab` přes `ffmpeg` s automatickým fallbackem na `gdigrab`).
@@ -24,8 +24,8 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 2. Na tabuli otevřete **Tabule Link** — na levé kartě můžete rovnou zapnout **Trvalý příjem na pozadí (i po startu)** a volitelně **Po startu rovnou otevřít obrazovku QR/PIN**, nebo klepnout na **Přijímat obraz a zvuk**.
 
 ### Windows notebook → tabule
-1. Ujistěte se, že na notebooku je dostupný `ffmpeg.exe` (buď v `PATH` přes `winget install Gyan.FFmpeg`, nebo položený do stejné složky vedle `TabuleLink-Windows-0.6.0.exe`).
-2. Spusťte [releases/TabuleLink-Windows-0.6.0.exe](releases/TabuleLink-Windows-0.6.0.exe).
+1. Ujistěte se, že na notebooku je dostupný `ffmpeg.exe` (buď v `PATH` přes `winget install Gyan.FFmpeg`, nebo položený do stejné složky vedle `TabuleLink-Windows-0.6.1.exe`).
+2. Spusťte [releases/TabuleLink-Windows-0.6.1.exe](releases/TabuleLink-Windows-0.6.1.exe).
 3. Aplikace sama najde tabuli v síti — zadejte **6místný PIN** zobrazený na tabuli a klikněte na **Spárovat a vysílat**.
 4. Příště už stačí jediné kliknutí na **⚡ Připojit** (včetně převzetí obrazovky od jiného prezentujícího).
 
@@ -35,7 +35,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 - `windows/` — Windows vysílač (C# / .NET Framework 4.8 WinForms, WASAPI Loopback, H.264 Annex-B & AAC ADTS parser) + 95 automatických testů (`Test-Windows.ps1`).
 - `Build.ps1`, `Test.ps1` — sestavení a testy Android APK.
 - `Build-Windows.ps1`, `Test-Windows.ps1` — sestavení a testy Windows `.exe` pomocí vestavěného `csc.exe`.
-- `releases/` — aktuální vydání (`Tabule-Link-0.6.0.apk`, `TabuleLink-Windows-0.6.0.exe`, záznam kontrol).
+- `releases/` — aktuální vydání (`Tabule-Link-0.6.0.apk`, `TabuleLink-Windows-0.6.1.exe`, záznam kontrol).
 
 ## Sestavení a testy
 

@@ -1,7 +1,7 @@
 ﻿param([string]$OutputFile)
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-if (-not $OutputFile) { $OutputFile = Join-Path $root 'releases\TabuleLink-Windows-0.6.0.exe' }
+if (-not $OutputFile) { $OutputFile = Join-Path $root 'releases\TabuleLink-Windows-0.6.1.exe' }
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) { throw "Chybí .NET Framework kompilátor: $csc" }
 $outDir = Split-Path -Parent $OutputFile

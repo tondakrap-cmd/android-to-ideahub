@@ -798,8 +798,15 @@ namespace TabuleLinkWin
             b.Location = new Point(x, y);
             b.Size = new Size(w, h);
             b.FlatStyle = FlatStyle.Flat;
-            b.FlatAppearance.BorderSize = border == Color.Transparent ? 0 : 1;
-            b.FlatAppearance.BorderColor = border;
+            if (border == Color.Transparent)
+            {
+                b.FlatAppearance.BorderSize = 0;
+            }
+            else
+            {
+                b.FlatAppearance.BorderSize = 1;
+                b.FlatAppearance.BorderColor = border;
+            }
             b.BackColor = bg;
             b.ForeColor = fg;
             b.Font = new Font("Segoe UI", 9.5f, bold ? FontStyle.Bold : FontStyle.Regular);
