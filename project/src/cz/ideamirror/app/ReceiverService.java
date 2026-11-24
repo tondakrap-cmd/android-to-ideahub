@@ -425,6 +425,23 @@ public class ReceiverService extends Service implements Proto.ServerContext, Vid
 
     @Override public void onDecoderInfo(String info) { diagDecoder = info; }
 
+    private final ArrayDeque<String> events = new ArrayDeque<>();
+
+    /** Short event log shown in the board diagnostics (decoder resets, rotations, sessions). */
+    @Override public void onEvent(String event) {
+        String line = new java.text.SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new Date()) + " " + event;
+        synchronized (events) {
+            events.addLast(line);
+            while (events.size() > 14) events.pollFirst();
+        }
+        UiListener l = uiListener;
+        if (l != null) l.onDiagnostics();
+    }
+
+    List<String> events() {
+        synchronized (events) { return new ArrayList<>(events); }
+    }
+
     @Override public void onRendered(long rendered, long skipped, int fps) {
         diagRendered = rendered;
         diagSkipped = skipped;
@@ -590,6 +607,7 @@ public class ReceiverService extends Service implements Proto.ServerContext, Vid
             if (!auth.legacy) Proto.writeGo(out);
             sock.setSoTimeout(20000);
             lastPresenter = auth.deviceName;
+            onEvent("prezentuje " + auth.deviceName + " (" + width + "×" + height + (auth.legacy ? ", klient 0.6" : "") + ")");
 
             acquireWifiLock();
             updateNotification();
@@ -687,9 +705,11 @@ public class ReceiverService extends Service implements Proto.ServerContext, Vid
     private boolean handleControl(Session s, String cmd) {
         if (Proto.CTL_PAUSE.equals(cmd)) {
             s.paused = true;
+            onEvent(s.auth.deviceName + " pozastavil(a) obraz");
             notifyBoard();
         } else if (Proto.CTL_RESUME.equals(cmd)) {
             s.paused = false;
+            onEvent(s.auth.deviceName + " pokračuje");
             notifyBoard();
         } else if (Proto.CTL_BYE.equals(cmd)) {
             s.endNotice = Proto.CTL_BYE;

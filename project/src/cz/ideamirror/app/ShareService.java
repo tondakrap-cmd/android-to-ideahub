@@ -45,7 +45,7 @@ public class ShareService extends Service {
     private static volatile ShareService instance;
     private static volatile String diagPhase = "nečinný", diagEncoder = "-", diagAudio = "vypnuto", diagError = "-", diagTarget = "-";
     static volatile long diagFrames = 0, diagAudioFrames = 0, diagDrops = 0;
-    static volatile int diagBitrateKbps = 0, diagFps = 0, diagAvgWriteMs = 0;
+    static volatile int diagBitrateKbps = 0, diagFps = 0, diagAvgWriteMs = 0, diagKfRequests = 0;
 
     private volatile boolean running = false;
     private volatile int sessionId = 0;
@@ -74,9 +74,29 @@ public class ShareService extends Service {
             + "\nKodér: " + diagEncoder
             + "\nZvuk: " + diagAudio + " (" + diagAudioFrames + " rámců · hlasitost " + audioVolumePercent + " %)"
             + "\nBitrate / FPS: " + String.format(Locale.ROOT, "%.1f Mb/s · %d fps · zápis ~%d ms", diagBitrateKbps / 1000.0, diagFps, diagAvgWriteMs)
-            + "\nOdeslané / přeskočené snímky: " + diagFrames + " / " + diagDrops
+            + "\nOdeslané / přeskočené snímky: " + diagFrames + " / " + diagDrops + " · žádosti tabule o klíčový snímek: " + diagKfRequests
             + (paused ? "\nPozastaveno" : "")
-            + "\nPoslední chyba: " + diagError;
+            + "\nPoslední chyba: " + diagError
+            + eventsText();
+    }
+
+    private static final java.util.ArrayDeque<String> EVENTS = new java.util.ArrayDeque<>();
+
+    static void event(String e) {
+        String line = new java.text.SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(new java.util.Date()) + " " + e;
+        synchronized (EVENTS) {
+            EVENTS.addLast(line);
+            while (EVENTS.size() > 14) EVENTS.pollFirst();
+        }
+    }
+
+    private static String eventsText() {
+        synchronized (EVENTS) {
+            if (EVENTS.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder("\nUdálosti:");
+            for (String e : EVENTS) sb.append("\n  ").append(e);
+            return sb.toString();
+        }
     }
 
     static String liveStats() {
@@ -138,7 +158,8 @@ public class ShareService extends Service {
             active = true;
             paused = false;
             reconnecting = false;
-            diagFrames = 0; diagAudioFrames = 0; diagDrops = 0; diagFps = 0; diagAvgWriteMs = 0; diagBitrateKbps = 0;
+            diagFrames = 0; diagAudioFrames = 0; diagDrops = 0; diagFps = 0; diagAvgWriteMs = 0; diagBitrateKbps = 0; diagKfRequests = 0;
+            synchronized (EVENTS) { EVENTS.clear(); }
             diagError = "-"; diagEncoder = "-";
             diagAudio = canCaptureAudio ? "spouštím" : (wantAudio ? "nedostupné (vyžaduje Android 10+ a oprávnění)" : "vypnuto uživatelem");
             diagPhase = "spouštění služby";
@@ -182,6 +203,19 @@ public class ShareService extends Service {
     /** {rawW, rawH, dpi} of the current (possibly rotated) display. */
     @SuppressWarnings("deprecation")
     private int[] rawScreen() {
+        // The default Display (same source as the DisplayListener) reflects a rotation immediately, also from a
+        // Service context; WindowManager metrics of a non-visual context may lag behind on Android 12+.
+        try {
+            DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+            Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+            if (d != null) {
+                DisplayMetrics metrics = new DisplayMetrics();
+                d.getRealMetrics(metrics);
+                if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+                    return new int[]{metrics.widthPixels, metrics.heightPixels, metrics.densityDpi};
+                }
+            }
+        } catch (Exception ignored) {}
         WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         if (Build.VERSION.SDK_INT >= 30) {
             Rect bounds = wm.getMaximumWindowMetrics().getBounds();
@@ -494,8 +528,10 @@ public class ShareService extends Service {
             try { old.release(); } catch (Exception ignored) {}
             try { oldSurface.release(); } catch (Exception ignored) {}
             status = "Vysílám na " + targetName + " · " + curW + " × " + curH + " · šifrováno";
+            event("otočení → nový kodér " + curW + "×" + curH);
         } catch (Exception e) {
             diagError = "Otočení: " + Ui.problem(e);
+            event("otočení se nepodařilo: " + Ui.problem(e));
         }
     }
 
@@ -539,6 +575,8 @@ public class ShareService extends Service {
             reconnecting = false;
             attempt = 0;
             status = "Vysílám na " + l.boardName + " · " + curW + " × " + curH + (l.v2 ? "" : " · starší tabule") + " · šifrováno";
+            diagPhase = "vysílání";
+            event((resume ? "spojení obnoveno" : "připojeno") + " k " + l.boardName + " (" + curW + "×" + curH + (l.v2 ? ", v2" : ", tabule 0.6") + ")");
             Thread writer = new Thread(() -> writeLoop(l), "tabule-net");
             writer.start();
             Thread reader = l.v2 ? new Thread(() -> readLoop(l), "tabule-ctl") : null;
@@ -562,6 +600,7 @@ public class ShareService extends Service {
             if (!l.v2) { fail("Vysílání ukončeno (tabule příjem zavřela nebo sdílení převzal jiný uživatel)."); return; }
             resume = true;
             reconnecting = true;
+            event("spojení přerušeno" + (diagError.equals("-") ? "" : " (" + diagError + ")") + " → obnovuji");
             reconnectUntil = SystemClock.elapsedRealtime() + RECONNECT_WINDOW_MS;
             status = "Spojení s tabulí přerušeno — obnovuji…";
         }
@@ -569,6 +608,7 @@ public class ShareService extends Service {
 
     private void fail(String msg) {
         if (!running) return;
+        event("konec: " + msg);
         status = msg;
         diagError = msg;
         running = false;
@@ -629,8 +669,10 @@ public class ShareService extends Service {
                 String cmd = Proto.controlText(p);
                 if (Proto.CTL_KEYFRAME.equals(cmd)) {
                     syncRequested = true;
+                    diagKfRequests++;
                 } else if (cmd.startsWith("end:")) {
                     l.endNotice = cmd;
+                    event("tabule ukončila spojení (" + cmd + ")");
                     l.close();
                 }
             }
