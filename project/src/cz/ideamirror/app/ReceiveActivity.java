@@ -648,6 +648,11 @@ public class ReceiveActivity extends Activity implements ReceiverService.UiListe
         sb.append("\nFPS: ").append(s.diagFps).append(" · pakety/vykreslené/přeskočené: ")
             .append(s.diagPackets).append(" / ").append(s.diagRendered).append(" / ").append(s.diagSkipped);
         sb.append("\nSpárovaná zařízení: ").append(s.settings().registry().size());
+        List<String> ev = s.events();
+        if (!ev.isEmpty()) {
+            sb.append("\nUdálosti:");
+            for (String e : ev) sb.append("\n  ").append(e);
+        }
         sb.append("\nPoslední chyba: ").append(s.diagLastError);
         return sb.toString();
     }

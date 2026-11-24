@@ -1,5 +1,17 @@
 # Změny
 
+## 0.7.1 (Android versionCode 11 · Windows beze změny 0.7.0)
+
+### Opravy
+- **Tabule nezobrazila obraz z Google Pixel (Android 17, kodér Exynos) nebo po otočení telefonu spojení skončilo timeoutem.**
+  - Dekodér na tabuli je nastavený na adaptivní přehrávání pro obě orientace, takže změna rozlišení při otočení telefonu už nevyžaduje jeho zastavení a nové spuštění. Na HiSilicon (Android 9) se zastavení mohlo zaseknout, tabule pak přestala číst data a telefon skončil na timeout.
+  - Když dekodér dostává klíčové snímky, ale 2,5 s nic nevykreslí, tabule ho sama vytvoří znovu v jednodušším režimu (nízká latence HiSilicon → základní → výchozí).
+  - Uvolnění dekodéru běží v pomocném vlákně s časovým limitem, takže zaseknutý dekodér nikdy nezablokuje příjem dat.
+- **Telefon:** rozměry obrazovky po otočení se čtou přímo z displeje, protože metriky okna služby se na Androidu 12+ mohou zpožďovat. Řádek „Fáze“ v diagnostice po připojení ukazuje „vysílání“.
+
+### Diagnostika
+- Tabule i telefon v diagnostice ukazují **posledních 14 událostí** (připojení, otočení, změny rozlišení, nové nastavení dekodéru, pauza, přerušení spojení) a telefon i počet žádostí tabule o klíčový snímek.
+
 ## 0.7.0 (Android versionCode 10 · Windows 0.7.0)
 
 ### Opravy chyb

@@ -11,7 +11,7 @@ import android.view.*;
 import android.widget.*;
 
 final class Ui {
-    static final String VERSION = "0.7.0";
+    static final String VERSION = "0.7.1";
     static final String ROLE_PREFS = "tabule_role", ROLE_BOARD = "board", ROLE_SENDER = "sender";
 
     static final int BG = Color.rgb(11, 19, 32);
