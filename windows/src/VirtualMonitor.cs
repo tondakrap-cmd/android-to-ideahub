@@ -409,12 +409,11 @@ namespace TabuleLinkWin
             string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", EnvironmentVariableTarget.Machine) ?? "";
             // the package calls the x64 build "x86"
             string driverDir = Path.Combine(packageDir, arch.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? @"SignedDrivers\ARM64\VDD" : @"SignedDrivers\x86\VDD");
-            string inf = Path.Combine(driverDir, "MttVDD.inf");
-            string devcon = Path.Combine(packageDir, @"Dependencies\devcon.exe");
-            if (!File.Exists(inf) || !File.Exists(devcon)) return "V balíčku ovladače chybí MttVDD.inf nebo devcon.exe (" + packageDir + ").";
+            if (!File.Exists(Path.Combine(driverDir, "MttVDD.inf")) || !File.Exists(Path.Combine(packageDir, @"Dependencies\devcon.exe")))
+                return "V balíčku ovladače chybí MttVDD.inf nebo devcon.exe (" + packageDir + ").";
             string log = Path.Combine(Path.GetTempPath(), "TabuleLink-vdd-install.log");
             try { if (File.Exists(log)) File.Delete(log); } catch { }
-            string script = BuildInstallScript(driverDir, devcon, inf, log);
+            string script = BuildInstallScript(packageDir, driverDir, @"C:\VirtualDisplayDriver", log);
             System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
             psi.FileName = "powershell.exe";
             psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
@@ -438,16 +437,49 @@ namespace TabuleLinkWin
             return "Instalace ovladače se nepodařila" + (result.Length > 0 ? ": " + result : ".");
         }
 
-        /// <summary>PowerShell script run elevated by InstallDriverElevated (public for the probe/test harness).</summary>
-        public static string BuildInstallScript(string driverDir, string devcon, string inf, string log)
+        /// <summary>
+        /// PowerShell script run elevated by InstallDriverElevated (public for the probe/test harness). The winget
+        /// package lives in the user-writable %LOCALAPPDATA%, so nothing is executed from there: devcon.exe and the
+        /// driver files are first copied into a fresh folder that only Administrators and SYSTEM can write, and the
+        /// copies must carry a valid Authenticode signature (devcon: Microsoft, driver catalog: SignPath Foundation).
+        /// </summary>
+        public static string BuildInstallScript(string packageDir, string driverDir, string settingsDir, string log)
         {
-            return "$ErrorActionPreference='Stop'; try { "
-                + "$t='C:\\VirtualDisplayDriver'; if (-not (Test-Path $t)) { New-Item -ItemType Directory -Path $t | Out-Null }; "
-                + "if (-not (Test-Path (Join-Path $t 'vdd_settings.xml'))) { Copy-Item " + PsQuote(Path.Combine(driverDir, "vdd_settings.xml")) + " $t }; "
+            return BuildInstallScript(packageDir, driverDir, settingsDir, log, null);
+        }
+
+        /// <summary>
+        /// Creates folder $w atomically with a protected DACL (no inherited entries): full control for Administrators
+        /// and SYSTEM only, so a standard user can't swap devcon.exe between the signature check and its execution.
+        /// </summary>
+        public const string AdminOnlyDirectorySnippet =
+            "$acl = New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true, $false); "
+            + "foreach ($sid in 'S-1-5-32-544','S-1-5-18') { $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("
+            + "(New-Object System.Security.Principal.SecurityIdentifier $sid), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }; "
+            + "$null = [System.IO.Directory]::CreateDirectory($w, $acl); ";
+
+        /// <summary>testWorkRoot != null (tests only, not elevated): work folder there, without the admin-only ACL.</summary>
+        public static string BuildInstallScript(string packageDir, string driverDir, string settingsDir, string log, string testWorkRoot)
+        {
+            return "$ErrorActionPreference='Stop'; $w=$null; try { "
+                + "$w = Join-Path " + (testWorkRoot == null ? "$env:SystemRoot" : PsQuote(testWorkRoot)) + " ('" + (testWorkRoot == null ? "Temp\\" : "") + "TabuleLink-vdd-' + [guid]::NewGuid().ToString('N')); "
+                + (testWorkRoot != null ? "New-Item -ItemType Directory -Path $w | Out-Null; " : AdminOnlyDirectorySnippet)
+                + "Copy-Item -Path (Join-Path " + PsQuote(driverDir) + " '*') -Destination $w; "
+                + "Copy-Item -LiteralPath " + PsQuote(Path.Combine(packageDir, @"Dependencies\devcon.exe")) + " -Destination (Join-Path $w 'devcon.exe'); "
+                + "$d = Join-Path $w 'devcon.exe'; $s = Get-AuthenticodeSignature -FilePath $d; "
+                + "if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'devcon.exe nemá platný podpis Microsoftu' }; "
+                + "$c = Get-AuthenticodeSignature -FilePath (Join-Path $w 'mttvdd.cat'); "
+                + "if ($c.Status -ne 'Valid' -or $c.SignerCertificate.Subject -notmatch 'CN=SignPath Foundation') { throw 'katalog ovladače nemá platný podpis SignPath Foundation' }; "
+                // settings: beside the INF, else in the package's Dependencies folder; without them the driver uses its defaults
+                + "$t=" + PsQuote(settingsDir) + "; if (-not (Test-Path $t)) { New-Item -ItemType Directory -Path $t | Out-Null }; "
+                + "if (-not (Test-Path (Join-Path $t 'vdd_settings.xml'))) { "
+                + "$x = @((Join-Path $w 'vdd_settings.xml'), " + PsQuote(Path.Combine(packageDir, @"Dependencies\vdd_settings.xml")) + ") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1; "
+                + "if ($x) { Copy-Item -LiteralPath $x -Destination $t } }; "
                 // stderr of a native command would throw under 'Stop' in Windows PowerShell 5.1
-                + "$ErrorActionPreference='Continue'; $o = & " + PsQuote(devcon) + " install " + PsQuote(inf) + " 'Root\\MttVDD' 2>&1 | Out-String; $ec = $LASTEXITCODE; "
+                + "$ErrorActionPreference='Continue'; $o = & $d install (Join-Path $w 'MttVDD.inf') 'Root\\MttVDD' 2>&1 | Out-String; $ec = $LASTEXITCODE; "
                 + "('exit=' + $ec + ' ' + $o.Trim()) | Set-Content -Path " + PsQuote(log) + " -Encoding UTF8 "
-                + "} catch { ('ERROR ' + $_.Exception.Message) | Set-Content -Path " + PsQuote(log) + " -Encoding UTF8 }";
+                + "} catch { ('ERROR ' + $_.Exception.Message) | Set-Content -Path " + PsQuote(log) + " -Encoding UTF8 } "
+                + "finally { if ($w -and (Test-Path -LiteralPath $w)) { Remove-Item -LiteralPath $w -Recurse -Force -ErrorAction SilentlyContinue } }";
         }
 
         private static string PsQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }

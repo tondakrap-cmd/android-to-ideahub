@@ -37,7 +37,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: FFmpeg pro testy parserů
-        run: choco install ffmpeg -y --no-progress
+        shell: pwsh
+        run: |
+          # the Chocolatey feed sometimes answers 503 and choco still exits 0: retry and check the binary
+          for ($i = 1; $i -le 3; $i++) {
+            choco install ffmpeg -y --no-progress
+            if (Test-Path 'C:\ProgramData\chocolatey\bin\ffmpeg.exe') { break }
+            Write-Host "ffmpeg není nainstalovaný, pokus $i/3 – zkouším znovu za 20 s"
+            Start-Sleep -Seconds 20
+          }
+          if (-not (Test-Path 'C:\ProgramData\chocolatey\bin\ffmpeg.exe')) { throw 'Instalace ffmpeg přes Chocolatey selhala.' }
       - name: Testy (protokol v2, parsery H.264/AAC)
         shell: pwsh
         run: |
