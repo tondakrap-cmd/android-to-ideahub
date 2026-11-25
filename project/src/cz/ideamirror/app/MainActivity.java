@@ -18,10 +18,14 @@ import java.util.*;
  */
 public class MainActivity extends Activity {
     private static final int SCAN = 11, CAPTURE = 12, PERMS = 13;
-    private static final String K_QUALITY = "quality", K_AUDIO = "audio", K_AUDIO_VOL = "audio_vol", K_ADV_OPEN = "advanced_open";
+    private static final String K_QUALITY = "quality", K_AUDIO = "audio", K_AUDIO_VOL = "audio_vol", K_ADV_OPEN = "advanced_open",
+        K_KEEP_ON = "keep_screen_on", K_FULL_SCREEN = "full_screen", K_MINIMIZE = "minimize_on_share";
 
     private int quality = ShareService.QUALITY_BALANCED;
-    private boolean audioEnabled = true;
+    private boolean audioEnabled = true, keepScreenOn = true, fullScreenOnly = true, minimizeOnShare = true;
+    /** Set when capture was granted with minimizing enabled; the tick hides the app once the board receives frames. */
+    private boolean pendingMinimize;
+    private long pendingMinimizeAt;
     private int audioVolume = 70, lastNonZeroVolume = 70;
     private String pendingShareFp;
 
@@ -29,12 +33,17 @@ public class MainActivity extends Activity {
     private TextView statusPill, liveTitle, liveStatus, liveStats, volumeLabel;
     private Button pauseBtn, liveMuteBtn, muteBtn, qualityBtn, advToggle;
     private SeekBar volumeSeek;
-    private Switch audioSwitch;
+    private Switch audioSwitch, liveKeepOnSwitch, advKeepOnSwitch;
     private String lastBoardsSignature = "";
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private final Runnable tick = new Runnable() {
         public void run() {
+            if (pendingMinimize) {
+                if (ShareService.connected) { pendingMinimize = false; moveTaskToBack(true); }
+                // The service starts asynchronously, so "not active" only means failure after a short grace period.
+                else if (!ShareService.active && SystemClock.elapsedRealtime() - pendingMinimizeAt > 3000) pendingMinimize = false;
+            }
             renderLive();
             String sig = ClientLink.prefs(MainActivity.this).getString("boards", "");
             if (!sig.equals(lastBoardsSignature)) renderBoards();
@@ -127,6 +136,10 @@ public class MainActivity extends Activity {
         audioVolume = AudioUtil.clampPercent(sp.getInt(K_AUDIO_VOL, 70));
         if (audioVolume > 0) lastNonZeroVolume = audioVolume;
         ShareService.audioVolumePercent = audioVolume;
+        keepScreenOn = sp.getBoolean(K_KEEP_ON, true);
+        fullScreenOnly = sp.getBoolean(K_FULL_SCREEN, true);
+        minimizeOnShare = sp.getBoolean(K_MINIMIZE, true);
+        if (!ShareService.active) ShareService.keepScreenOn = keepScreenOn;
 
         ScrollView sc = new ScrollView(this);
         sc.setFillViewport(true);
@@ -189,6 +202,8 @@ public class MainActivity extends Activity {
         liveBtns.addView(liveMuteBtn, new LinearLayout.LayoutParams(third));
         liveBtns.addView(stopBtn, new LinearLayout.LayoutParams(0, -2, 1f));
         liveCard.addView(liveBtns, Ui.vSpace(this, 10, 0));
+        liveKeepOnSwitch = Ui.toggleRow(liveCard, "☀ Nezhasínat obrazovku", "Zařízení během vysílání neusne ani se nezamkne.",
+            keepScreenOn, (b, checked) -> setKeepScreenOn(checked));
         root.addView(liveCard, Ui.vSpace(this, 0, 14));
 
         // Boards
@@ -234,6 +249,13 @@ public class MainActivity extends Activity {
     }
 
     private void buildAdvanced() {
+        Ui.toggleRow(advancedBox, "Vždy sdílet celou obrazovku",
+            Build.VERSION.SDK_INT >= 34 ? "Vypnuto: Android nabídne i sdílení jen jedné aplikace" : "Tato verze Androidu sdílí vždy celou obrazovku",
+            fullScreenOnly, (b, checked) -> { fullScreenOnly = checked; prefs().edit().putBoolean(K_FULL_SCREEN, checked).apply(); });
+        Ui.toggleRow(advancedBox, "Po zahájení vysílání skrýt aplikaci", "Tabule Link se minimalizuje, jakmile tabule začne zobrazovat obraz",
+            minimizeOnShare, (b, checked) -> { minimizeOnShare = checked; prefs().edit().putBoolean(K_MINIMIZE, checked).apply(); });
+        advKeepOnSwitch = Ui.toggleRow(advancedBox, "Nezhasínat obrazovku během vysílání", "Lze přepnout i za běhu v kartě vysílání",
+            keepScreenOn, (b, checked) -> setKeepScreenOn(checked));
         Ui.toggleRow(advancedBox, "Přenášet zvuk aplikací", Build.VERSION.SDK_INT >= 29 ? "YouTube, videa, prezentace (AAC stereo)" : "Vyžaduje Android 10 nebo novější",
             audioEnabled && Build.VERSION.SDK_INT >= 29, (b, checked) -> {
                 audioEnabled = checked;
@@ -272,7 +294,7 @@ public class MainActivity extends Activity {
 
     private void setAdvancedOpen(boolean open) {
         advancedBox.setVisibility(open ? View.VISIBLE : View.GONE);
-        advToggle.setText((open ? "▾" : "▸") + "  Nastavení přenosu (zvuk, hlasitost, kvalita)");
+        advToggle.setText((open ? "▾" : "▸") + "  Nastavení přenosu (obrazovka, zvuk, kvalita)");
         prefs().edit().putBoolean(K_ADV_OPEN, open).apply();
     }
 
@@ -410,6 +432,15 @@ public class MainActivity extends Activity {
         if (muteBtn != null) muteBtn.setText(audioVolume == 0 ? "Obnovit zvuk" : "Ztlumit");
         if (volumeSeek != null && volumeSeek.getProgress() != audioVolume) volumeSeek.setProgress(audioVolume);
         if (persist) prefs().edit().putInt(K_AUDIO_VOL, audioVolume).apply();
+    }
+
+    private void setKeepScreenOn(boolean on) {
+        keepScreenOn = on;
+        prefs().edit().putBoolean(K_KEEP_ON, on).apply();
+        ShareService.setKeepScreenOn(on);
+        // setChecked with an unchanged value fires no listener, so syncing the twin switch cannot loop.
+        if (liveKeepOnSwitch != null && liveKeepOnSwitch.isChecked() != on) liveKeepOnSwitch.setChecked(on);
+        if (advKeepOnSwitch != null && advKeepOnSwitch.isChecked() != on) advKeepOnSwitch.setChecked(on);
     }
 
     private void toggleMute() {
@@ -597,7 +628,14 @@ public class MainActivity extends Activity {
 
     private void launchCapture() {
         MediaProjectionManager m = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        startActivityForResult(m.createScreenCaptureIntent(), CAPTURE);
+        Intent capture;
+        if (fullScreenOnly && Build.VERSION.SDK_INT >= 34) {
+            // Android 14+ otherwise opens the consent dialog on "share one app"; this config offers only the whole screen.
+            capture = m.createScreenCaptureIntent(android.media.projection.MediaProjectionConfig.createConfigForDefaultDisplay());
+        } else {
+            capture = m.createScreenCaptureIntent();
+        }
+        startActivityForResult(capture, CAPTURE);
     }
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
@@ -627,11 +665,14 @@ public class MainActivity extends Activity {
                     .putExtra("quality", quality)
                     .putExtra("audio", audioEnabled)
                     .putExtra("audioVolume", audioVolume)
+                    .putExtra("keepScreenOn", keepScreenOn)
                     .putExtra("result", result)
                     .putExtra("capture", data);
                 try {
                     startForegroundService(i);
                     lastShownStatus = "Připojuji se k tabuli…";
+                    pendingMinimize = minimizeOnShare;
+                    pendingMinimizeAt = SystemClock.elapsedRealtime();
                 } catch (Exception e) {
                     Ui.error(this, Ui.problem(e));
                 }
@@ -644,5 +685,5 @@ public class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); b.putString("pending_fp", pendingShareFp); }
     @Override protected void onRestoreInstanceState(Bundle b) { super.onRestoreInstanceState(b); pendingShareFp = b.getString("pending_fp"); }
     @Override protected void onResume() { super.onResume(); if (boardsList != null) { main.removeCallbacks(tick); main.post(tick); } }
-    @Override protected void onPause() { main.removeCallbacks(tick); super.onPause(); }
+    @Override protected void onPause() { main.removeCallbacks(tick); pendingMinimize = false; super.onPause(); }
 }

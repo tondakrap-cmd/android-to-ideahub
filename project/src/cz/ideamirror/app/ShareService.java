@@ -42,6 +42,10 @@ public class ShareService extends Service {
     static volatile boolean reconnecting = false;
     static volatile String targetName = "";
     static volatile int audioVolumePercent = 70;
+    /** True while a link to the board is up and frames are being sent (not while connecting/reconnecting). */
+    static volatile boolean connected = false;
+    /** Keep the presenter's screen on while sharing (a locked/blank screen would stop the picture on the board). */
+    static volatile boolean keepScreenOn = true;
     private static volatile ShareService instance;
     private static volatile String diagPhase = "nečinný", diagEncoder = "-", diagAudio = "vypnuto", diagError = "-", diagTarget = "-";
     static volatile long diagFrames = 0, diagAudioFrames = 0, diagDrops = 0;
@@ -50,7 +54,7 @@ public class ShareService extends Service {
     private volatile boolean running = false;
     private volatile int sessionId = 0;
     private Thread worker;
-    private PowerManager.WakeLock wake;
+    private PowerManager.WakeLock wake, screenWake;
     private WifiManager.WifiLock wifiLock;
     private final Handler main = new Handler(Looper.getMainLooper());
 
@@ -116,6 +120,31 @@ public class ShareService extends Service {
         }
     }
 
+    /** Turns the "screen stays on" lock on/off; works at runtime, also while the app is in the background. */
+    static void setKeepScreenOn(boolean on) {
+        keepScreenOn = on;
+        ShareService s = instance;
+        if (s != null) s.main.post(s::applyScreenWake);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyScreenWake() {
+        try {
+            boolean want = keepScreenOn && running;
+            if (want && (screenWake == null || !screenWake.isHeld())) {
+                // FLAG_KEEP_SCREEN_ON only works while our window is visible; the presenter usually shows another app.
+                screenWake = ((PowerManager) getSystemService(POWER_SERVICE)).newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "TabuleLink:screen");
+                screenWake.setReferenceCounted(false);
+                screenWake.acquire(8 * 60 * 60 * 1000L);
+            } else if (!want && screenWake != null && screenWake.isHeld()) {
+                screenWake.release();
+            }
+        } catch (Exception e) {
+            diagError = "Nezhasínání obrazovky: " + Ui.problem(e);
+        }
+    }
+
     @Override public IBinder onBind(Intent i) { return null; }
 
     @Override public int onStartCommand(Intent i, int flags, int id) {
@@ -158,6 +187,7 @@ public class ShareService extends Service {
             active = true;
             paused = false;
             reconnecting = false;
+            connected = false;
             diagFrames = 0; diagAudioFrames = 0; diagDrops = 0; diagFps = 0; diagAvgWriteMs = 0; diagBitrateKbps = 0; diagKfRequests = 0;
             synchronized (EVENTS) { EVENTS.clear(); }
             diagError = "-"; diagEncoder = "-";
@@ -166,6 +196,8 @@ public class ShareService extends Service {
             status = "Připojuji se k tabuli…";
             wake = ((PowerManager) getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TabuleLink:sharing");
             wake.acquire(8 * 60 * 60 * 1000L);
+            keepScreenOn = i.getBooleanExtra("keepScreenOn", keepScreenOn);
+            applyScreenWake();
             acquireWifiLock();
             final boolean captureAudio = canCaptureAudio;
             worker = new Thread(() -> run(i, id, captureAudio), "tabule-send");
@@ -573,6 +605,7 @@ public class ShareService extends Service {
             link = l;
             syncRequested = true;
             reconnecting = false;
+            connected = true;
             attempt = 0;
             status = "Vysílám na " + l.boardName + " · " + curW + " × " + curH + (l.v2 ? "" : " · starší tabule") + " · šifrováno";
             diagPhase = "vysílání";
@@ -589,6 +622,7 @@ public class ShareService extends Service {
                     l.close();
                 }
             }
+            connected = false;
             if (!running) { sayBye(l); link = null; return; }
             l.close();
             link = null;
@@ -784,6 +818,8 @@ public class ShareService extends Service {
         }
         if (worker != null) worker.interrupt();
         if (wake != null && wake.isHeld()) wake.release();
+        try { if (screenWake != null && screenWake.isHeld()) screenWake.release(); } catch (Exception ignored) {}
+        connected = false;
         try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {}
         active = false;
         if (instance == this) instance = null;
