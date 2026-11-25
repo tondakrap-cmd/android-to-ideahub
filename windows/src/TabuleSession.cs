@@ -68,6 +68,7 @@ namespace TabuleLinkWin
         public bool MuteSpeakers;
         public bool AllowTouch;
         public string DeviceName;
+        public bool VirtualMonitor;  // share a new extended virtual monitor (Virtual Display Driver)
     }
 
     /// <summary>
@@ -97,6 +98,8 @@ namespace TabuleLinkWin
         private volatile byte[] lastAudioConfig;
         private volatile int curW, curH;
         private Rectangle captureRect;
+        private volatile string monitorDevice;  // GDI name of the attached virtual monitor
+        private bool virtualAttached;
         private string stopReason;
         private bool stopIsError;
         private bool? speakerMutedBefore;
@@ -355,7 +358,9 @@ namespace TabuleLinkWin
         {
             return "Windows " + Environment.OSVersion.VersionString + " · Tabule Link " + WireConstants.Version
                 + "\r\nCíl: " + BoardName + " (" + cfg.Board.Address + ")" + (link != null && !link.V2 ? " · starší tabule 0.6" : "")
-                + "\r\nZdroj: " + (cfg.WindowHandle != IntPtr.Zero ? "okno „" + cfg.WindowTitle + "“" : "monitor " + (cfg.ScreenIndex + 1))
+                + "\r\nZdroj: " + (cfg.WindowHandle != IntPtr.Zero ? "okno „" + cfg.WindowTitle + "“"
+                    : cfg.VirtualMonitor ? "nový virtuální monitor " + (monitorDevice ?? "(nepřipojen)") + " · " + captureRect.Width + " × " + captureRect.Height + " na pozici " + captureRect.X + ", " + captureRect.Y
+                    : "monitor " + (cfg.ScreenIndex + 1))
                 + "\r\nFáze: " + DiagPhase + (paused ? " · pozastaveno" : "") + (reconnecting ? " · obnovuji spojení" : "")
                 + "\r\nVideo: " + DiagCapture
                 + "\r\nZvuk: " + DiagAudio + " (" + Interlocked.Read(ref DiagAudioFrames) + " rámců)"
@@ -382,6 +387,13 @@ namespace TabuleLinkWin
         }
 
         public void Dispose() { Stop(); }
+
+        /// <summary>Waits for the session thread (cleanup such as detaching the virtual monitor) to finish.</summary>
+        public bool WaitStopped(int timeoutMs)
+        {
+            Thread t = mainThread;
+            return t == null || t.Join(timeoutMs);
+        }
 
         /// <summary>Freezes the board on the last frame (audio keeps playing).</summary>
         public void SetPaused(bool p)
@@ -439,6 +451,15 @@ namespace TabuleLinkWin
                 {
                     throw new FileNotFoundException("Nebyl nalezen program ffmpeg.exe. Klikněte na „Nainstalovat FFmpeg“ nebo „Vybrat ffmpeg.exe“.");
                 }
+                if (cfg.VirtualMonitor)
+                {
+                    Report("připojuji virtuální monitor", "Připojuji nový virtuální monitor…");
+                    virtualAttached = true; // also detach after a partial failure
+                    bool ours;
+                    monitorDevice = VirtualMonitor.Attach(DisplayMath.VirtualWidth, DisplayMath.VirtualHeight, out ours);
+                    virtualAttached = ours;
+                    if (!running) return;
+                }
                 Rectangle rect = CurrentSourceRect();
                 if (rect.Width < 16 || rect.Height < 16) throw new IOException("Sdílené okno nebo monitor není k dispozici.");
                 captureRect = rect;
@@ -474,6 +495,11 @@ namespace TabuleLinkWin
                 if (audioReader != null) { try { audioReader.Join(800); } catch { } }
                 if (wasapi != null) { try { wasapi.Dispose(); } catch { } wasapi = null; }
                 if (speakerMutedBefore.HasValue && !speakerMutedBefore.Value) Native.SetSpeakerMute(false);
+                if (virtualAttached)
+                {
+                    string err = VirtualMonitor.Detach();
+                    if (err != null) { stopReason = (stopReason ?? "Vysílání ukončeno.") + " " + err; stopIsError = true; }
+                }
                 if (onStopped != null) onStopped(stopReason ?? "Vysílání ukončeno.", stopIsError);
             }
         }
@@ -484,6 +510,11 @@ namespace TabuleLinkWin
             {
                 if (!Native.IsWindow(cfg.WindowHandle)) return Rectangle.Empty;
                 return Native.WindowBounds(cfg.WindowHandle);
+            }
+            if (cfg.VirtualMonitor)
+            {
+                string dev = monitorDevice;
+                return dev == null ? Rectangle.Empty : VirtualMonitor.Bounds(dev);
             }
             Screen[] screens = Screen.AllScreens;
             int idx = cfg.ScreenIndex < 0 || cfg.ScreenIndex >= screens.Length ? 0 : cfg.ScreenIndex;
@@ -746,9 +777,8 @@ namespace TabuleLinkWin
             if (t == null) return;
             Rectangle r = cfg.WindowHandle != IntPtr.Zero ? Native.WindowBounds(cfg.WindowHandle) : captureRect;
             if (r.Width <= 0 || r.Height <= 0) return;
-            int x = r.Left + (int)Math.Round(t[1] / 65535.0 * (r.Width - 1));
-            int y = r.Top + (int)Math.Round(t[2] / 65535.0 * (r.Height - 1));
-            try { Native.InjectMouse(x, y, (char)t[0]); } catch { }
+            Point pt = DisplayMath.TouchToDesktop(r, t[1], t[2]);
+            try { Native.InjectMouse(pt.X, pt.Y, (char)t[0]); } catch { }
         }
 
         // ------------------------------------------------------------------ video capture
@@ -815,12 +845,23 @@ namespace TabuleLinkWin
             int fps = cfg.Quality.Fps;
             string pix = encoderId == "libx264" ? "yuv420p" : "nv12";
             string scale = string.Format(CultureInfo.InvariantCulture, "scale={0}:{1}:flags=bilinear,format={2}", w, h, pix);
+            int adapter = 0, output = 0;
             if (method == "ddagrab")
             {
-                Screen[] screens = Screen.AllScreens;
-                int idx = cfg.ScreenIndex < 0 || cfg.ScreenIndex >= screens.Length ? 0 : cfg.ScreenIndex;
-                int adapter, output;
-                if (!Native.FindDxgiOutput(screens[idx].DeviceName, out adapter, out output)) { adapter = 0; output = idx; }
+                if (cfg.VirtualMonitor)
+                {
+                    // no index fallback here: a wrong DXGI output would capture the laptop screen instead
+                    if (!Native.FindDxgiOutput(monitorDevice ?? "", out adapter, out output)) method = "gdigrab-region";
+                }
+                else
+                {
+                    Screen[] screens = Screen.AllScreens;
+                    int idx = cfg.ScreenIndex < 0 || cfg.ScreenIndex >= screens.Length ? 0 : cfg.ScreenIndex;
+                    if (!Native.FindDxgiOutput(screens[idx].DeviceName, out adapter, out output)) { adapter = 0; output = idx; }
+                }
+            }
+            if (method == "ddagrab")
+            {
                 DiagCapture = "ddagrab (GPU " + adapter + ", výstup " + output + ")";
                 return string.Format(CultureInfo.InvariantCulture,
                     "-hide_banner -loglevel error -init_hw_device d3d11va=tl:{0} -filter_hw_device tl -filter_complex \"ddagrab=output_idx={1}:framerate={2}:draw_mouse=1,hwdownload,format=bgra,{3}\"",
@@ -864,6 +905,7 @@ namespace TabuleLinkWin
                 if (rect.Width < 16 || rect.Height < 16)
                 {
                     if (cfg.WindowHandle != IntPtr.Zero && !Native.IsWindow(cfg.WindowHandle)) { Finish("Sdílené okno bylo zavřeno.", false); return; }
+                    if (cfg.VirtualMonitor) { Finish("Virtuální monitor byl odpojen (Nastavení zobrazení nebo Win+P), vysílání skončilo.", true); return; }
                     Thread.Sleep(500);
                     continue;
                 }

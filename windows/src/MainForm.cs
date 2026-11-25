@@ -17,6 +17,7 @@ namespace TabuleLinkWin
     public sealed class MainForm : Form
     {
         private const int HotkeyStop = 1, HotkeyPause = 2, HotkeyMute = 3;
+        private const int VirtualScreenSetting = -2; // config.ini "screen=-2" = share as a new virtual monitor
 
         private sealed class BoardItem
         {
@@ -32,6 +33,7 @@ namespace TabuleLinkWin
         private sealed class SourceItem
         {
             public int Screen = -1;
+            public bool Virtual;
             public Native.WindowInfo Window;
             public string Label;
             public override string ToString() { return Label; }
@@ -77,6 +79,8 @@ namespace TabuleLinkWin
         {
             SuspendLayout();
             LoadSettings();
+            // a virtual monitor left on the desktop by a crashed session is detached again
+            ThreadPool.QueueUserWorkItem(delegate { VirtualMonitor.CleanupIfOurs(); });
             Icon appIcon = CreateAppIcon();
             Icon = appIcon;
             Text = "Tabule Link " + WireConstants.Version + " — Windows";
@@ -593,6 +597,10 @@ namespace TabuleLinkWin
                 s.Label = "🖥 Monitor " + (i + 1) + " — " + all[i].Bounds.Width + " × " + all[i].Bounds.Height + (all[i].Primary ? " (hlavní)" : "");
                 sourceCombo.Items.Add(s);
             }
+            SourceItem v = new SourceItem();
+            v.Virtual = true;
+            v.Label = "➕ Vysílat jako nový monitor (rozšíření " + DisplayMath.VirtualWidth + " × " + DisplayMath.VirtualHeight + ")";
+            int virtualIndex = sourceCombo.Items.Add(v);
             foreach (Native.WindowInfo w in Native.ListWindows(Handle))
             {
                 SourceItem s = new SourceItem();
@@ -600,14 +608,15 @@ namespace TabuleLinkWin
                 s.Label = "🗔 Okno: " + w.Label;
                 sourceCombo.Items.Add(s);
             }
-            int sel = Math.Min(Math.Max(0, lastScreen), all.Length - 1);
+            int sel = lastScreen == VirtualScreenSetting ? virtualIndex : Math.Min(Math.Max(0, lastScreen), all.Length - 1);
             SourceItem p = prev as SourceItem;
             if (p != null)
             {
                 for (int i = 0; i < sourceCombo.Items.Count; i++)
                 {
                     SourceItem c = (SourceItem)sourceCombo.Items[i];
-                    if ((p.Window == null && c.Window == null && c.Screen == p.Screen) || (p.Window != null && c.Window != null && c.Window.Handle == p.Window.Handle)) sel = i;
+                    if (p.Virtual) { if (c.Virtual) sel = i; continue; }
+                    if ((p.Window == null && c.Window == null && !c.Virtual && c.Screen == p.Screen) || (p.Window != null && c.Window != null && c.Window.Handle == p.Window.Handle)) sel = i;
                 }
             }
             if (sourceCombo.Items.Count > 0) sourceCombo.SelectedIndex = Math.Max(0, sel);
@@ -623,7 +632,13 @@ namespace TabuleLinkWin
             SessionConfig cfg = new SessionConfig();
             cfg.Board = board.Clone();
             cfg.FfmpegPath = customFfmpegPath;
-            if (src != null && src.Window != null)
+            if (src != null && src.Virtual)
+            {
+                if (!EnsureVirtualDisplayDriver()) return;
+                cfg.VirtualMonitor = true;
+                lastScreen = VirtualScreenSetting;
+            }
+            else if (src != null && src.Window != null)
             {
                 cfg.WindowHandle = src.Window.Handle;
                 cfg.WindowTitle = Native.WindowTitle(src.Window.Handle);
@@ -832,6 +847,112 @@ namespace TabuleLinkWin
             }
         }
 
+        // ------------------------------------------------------------------ virtual monitor driver
+
+        /// <summary>True when the Virtual Display Driver is ready; otherwise explains (in Czech) and offers installation.</summary>
+        private bool EnsureVirtualDisplayDriver()
+        {
+            List<string> ids;
+            string detail;
+            VddState st = VirtualMonitor.Detect(out ids, out detail);
+            if (st == VddState.Ready) return true;
+            if (st == VddState.Disabled)
+            {
+                DialogResult r = MessageBox.Show(this,
+                    char.ToUpper(detail[0]) + detail.Substring(1) + ".\r\n\r\n"
+                    + "Povolte ho ve Správci zařízení: Grafické adaptéry → Virtual Display Driver → pravé tlačítko → Povolit zařízení. "
+                    + "Pokud to nepomůže, ovladač přeinstalujte nebo restartujte počítač.\r\n\r\nOtevřít Správce zařízení?",
+                    "Vysílat jako nový monitor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r == DialogResult.Yes)
+                {
+                    try { System.Diagnostics.Process.Start("devmgmt.msc"); } catch { }
+                }
+                return false;
+            }
+            DialogResult res = MessageBox.Show(this,
+                "Pro vysílání jako nový monitor potřebuje Tabule Link bezplatný ovladač virtuálního monitoru "
+                + "„Virtual Display Driver“ (open source, licence MIT, " + VirtualMonitor.ProjectUrl + ").\r\n\r\n"
+                + "Instaluje se jen jednou přes winget. Windows se při instalaci zeptá na oprávnění správce "
+                + "a na důvěru vydavateli ovladače (SignPath Foundation). Samotné vysílání pak oprávnění správce nepotřebuje.\r\n\r\n"
+                + "Mimo vysílání je virtuální monitor odpojený, takže okna ani myš na něj nezabloudí.\r\n\r\n"
+                + "Nainstalovat ovladač teď?",
+                "Vysílat jako nový monitor — chybí ovladač", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (res == DialogResult.Yes) InstallVirtualDisplayDriver();
+            return false;
+        }
+
+        private void InstallVirtualDisplayDriver()
+        {
+            try
+            {
+                System.Diagnostics.Process p = null;
+                if (VirtualMonitor.FindWingetPackage() == null)
+                {
+                    // step 1: winget unpacks the signed driver package (portable, no admin rights needed)
+                    statusLabel.Text = "Stahuji ovladač virtuálního monitoru přes winget… Po dokončení zavřete okno terminálu.";
+                    System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
+                    psi.FileName = "cmd.exe";
+                    psi.Arguments = "/c echo Stahuji ovladac virtualniho monitoru pro Tabule Link... & winget install --id " + VirtualMonitor.WingetId
+                        + " -e --accept-source-agreements --accept-package-agreements & echo. & echo Hotovo! Zavrete toto okno, Tabule Link pak ovladac nainstaluje. & pause";
+                    psi.UseShellExecute = true;
+                    p = System.Diagnostics.Process.Start(psi);
+                    if (p == null) return;
+                }
+                Thread t = new Thread(delegate()
+                {
+                    if (p != null) { try { p.WaitForExit(); } catch { } }
+                    string error = null;
+                    string pkg = VirtualMonitor.FindWingetPackage();
+                    if (pkg == null)
+                    {
+                        error = "winget balíček ovladače nestáhl.";
+                    }
+                    else
+                    {
+                        // step 2: install the driver from the package (UAC prompt)
+                        InvokeSafe(delegate { statusLabel.Text = "Instaluji ovladač virtuálního monitoru… Potvrďte prosím oprávnění správce a důvěru vydavateli ovladače."; });
+                        error = VirtualMonitor.InstallDriverElevated(pkg);
+                    }
+                    List<string> ids;
+                    string detail = "";
+                    VddState st = VddState.Missing;
+                    for (int i = 0; i < 20; i++)
+                    {
+                        st = VirtualMonitor.Detect(out ids, out detail);
+                        if (st == VddState.Ready || error != null) break;
+                        Thread.Sleep(500);
+                    }
+                    if (st == VddState.Ready)
+                    {
+                        // the driver shows its monitor right after installation: keep it detached until sharing starts
+                        VirtualMonitor.MarkManaged();
+                        VirtualMonitor.CleanupIfOurs();
+                    }
+                    InvokeSafe(delegate
+                    {
+                        RefreshSources();
+                        if (st == VddState.Ready)
+                        {
+                            statusLabel.Text = "Ovladač virtuálního monitoru je připraven ✓ Klikněte znovu na vysílání.";
+                            return;
+                        }
+                        statusLabel.Text = "Ovladač virtuálního monitoru není připraven.";
+                        MessageBox.Show(this, (error ?? "Instalace skončila, ale ovladač zatím není připraven (" + detail + ").")
+                            + "\r\n\r\nZkuste restartovat počítač, nebo ovladač nainstalujte ručně v aplikaci Virtual Driver Control (příkaz „VDD Control“) podle návodu na "
+                            + VirtualMonitor.ProjectUrl, "Instalace ovladače", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    });
+                });
+                t.IsBackground = true;
+                t.SetApartmentState(ApartmentState.STA); // ShellExecute (UAC "runas") expects an STA thread
+                t.Start();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Nepodařilo se spustit winget: " + ex.Message + "\r\nOvladač si můžete nainstalovat ručně podle návodu na " + VirtualMonitor.ProjectUrl,
+                    "Instalace ovladače", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
         // ------------------------------------------------------------------ tray, hotkeys, window
 
         private void SetupTray(Icon appIcon)
@@ -917,6 +1038,9 @@ namespace TabuleLinkWin
                 if (res != DialogResult.Yes) { e.Cancel = true; return; }
             }
             StopStreaming();
+            // the session thread is a background thread: let it detach the virtual monitor before the process exits
+            if (activeSession != null) activeSession.WaitStopped(4000);
+            VirtualMonitor.CleanupIfOurs();
             try
             {
                 Native.UnregisterHotKey(Handle, HotkeyStop);

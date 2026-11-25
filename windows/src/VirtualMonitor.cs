@@ -1,0 +1,609 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
+namespace TabuleLinkWin
+{
+    public enum VddState { Missing, Disabled, Ready }
+
+    /// <summary>
+    /// "Share as a new monitor": an extended virtual monitor provided by the open-source Virtual Display Driver
+    /// (github.com/VirtualDrivers/Virtual-Display-Driver, MIT, IddCx). The driver is installed once (winget, admin);
+    /// its monitor is kept detached from the desktop and attached only while sharing — via SetDisplayConfig, which a
+    /// standard user may call, so sharing itself never needs administrator rights.
+    /// </summary>
+    public static class VirtualMonitor
+    {
+        public const string WingetId = "VirtualDrivers.Virtual-Display-Driver";
+        public const string ProjectUrl = "https://github.com/VirtualDrivers/Virtual-Display-Driver";
+
+        private static readonly object Gate = new object();
+
+        // ------------------------------------------------------------ driver detection (SetupAPI)
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SP_DEVINFO_DATA
+        {
+            public uint cbSize;
+            public Guid ClassGuid;
+            public uint DevInst;
+            public IntPtr Reserved;
+        }
+
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SetupDiGetClassDevsW(ref Guid classGuid, IntPtr enumerator, IntPtr hwnd, uint flags);
+        [DllImport("setupapi.dll", SetLastError = true)]
+        private static extern bool SetupDiEnumDeviceInfo(IntPtr set, uint index, ref SP_DEVINFO_DATA data);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiGetDeviceRegistryPropertyW(IntPtr set, ref SP_DEVINFO_DATA data, uint property, out uint regType, byte[] buffer, uint size, out uint required);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SetupDiGetDeviceInstanceIdW(IntPtr set, ref SP_DEVINFO_DATA data, StringBuilder id, int size, out int required);
+        [DllImport("setupapi.dll")]
+        private static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+        [DllImport("cfgmgr32.dll")]
+        private static extern int CM_Get_DevNode_Status(out uint status, out uint problem, uint devInst, uint flags);
+
+        private static readonly Guid DisplayClass = new Guid("4d36e968-e325-11ce-bfc1-08002be10318");
+        private const uint DIGCF_PRESENT = 0x2, SPDRP_HARDWAREID = 0x1, DN_STARTED = 0x8, CM_PROB_DISABLED = 22;
+
+        /// <summary>Finds the Virtual Display Driver among present display adapters.</summary>
+        public static VddState Detect(out List<string> instanceIds, out string detail)
+        {
+            instanceIds = new List<string>();
+            detail = "ovladač Virtual Display Driver není nainstalovaný";
+            VddState best = VddState.Missing;
+            Guid cls = DisplayClass;
+            IntPtr set = SetupDiGetClassDevsW(ref cls, IntPtr.Zero, IntPtr.Zero, DIGCF_PRESENT);
+            if (set == IntPtr.Zero || set == new IntPtr(-1)) return best;
+            try
+            {
+                for (uint i = 0; i < 64; i++)
+                {
+                    SP_DEVINFO_DATA d = new SP_DEVINFO_DATA();
+                    d.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                    if (!SetupDiEnumDeviceInfo(set, i, ref d)) break;
+                    byte[] buf = new byte[2048];
+                    uint regType, req;
+                    if (!SetupDiGetDeviceRegistryPropertyW(set, ref d, SPDRP_HARDWAREID, out regType, buf, (uint)buf.Length, out req)) continue;
+                    string raw = Encoding.Unicode.GetString(buf, 0, (int)Math.Min(req, (uint)buf.Length));
+                    if (!DisplayMath.IsVddHardwareId(DisplayMath.SplitMultiSz(raw))) continue;
+                    StringBuilder sb = new StringBuilder(400);
+                    int need;
+                    if (SetupDiGetDeviceInstanceIdW(set, ref d, sb, sb.Capacity, out need)) instanceIds.Add(sb.ToString());
+                    uint status, problem;
+                    bool started = CM_Get_DevNode_Status(out status, out problem, d.DevInst, 0) == 0 && (status & DN_STARTED) != 0;
+                    if (started)
+                    {
+                        best = VddState.Ready;
+                        detail = "Virtual Display Driver je připraven";
+                    }
+                    else if (best != VddState.Ready)
+                    {
+                        best = VddState.Disabled;
+                        detail = problem == CM_PROB_DISABLED
+                            ? "Virtual Display Driver je ve Správci zařízení zakázaný"
+                            : "Virtual Display Driver nefunguje (kód problému " + problem + " ve Správci zařízení)";
+                    }
+                }
+            }
+            catch (Exception ex) { detail = "kontrola ovladače selhala: " + ex.Message; }
+            finally { SetupDiDestroyDeviceInfoList(set); }
+            return best;
+        }
+
+        // ------------------------------------------------------------ CCD (QueryDisplayConfig / SetDisplayConfig)
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LUID { public uint LowPart; public int HighPart; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DISPLAYCONFIG_PATH_SOURCE_INFO { public LUID adapterId; public uint id; public uint modeInfoIdx; public uint statusFlags; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DISPLAYCONFIG_RATIONAL { public uint Numerator, Denominator; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DISPLAYCONFIG_PATH_TARGET_INFO
+        {
+            public LUID adapterId;
+            public uint id;
+            public uint modeInfoIdx;
+            public uint outputTechnology;
+            public uint rotation;
+            public uint scaling;
+            public DISPLAYCONFIG_RATIONAL refreshRate;
+            public uint scanLineOrdering;
+            public int targetAvailable;
+            public uint statusFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DISPLAYCONFIG_PATH_INFO
+        {
+            public DISPLAYCONFIG_PATH_SOURCE_INFO sourceInfo;
+            public DISPLAYCONFIG_PATH_TARGET_INFO targetInfo;
+            public uint flags;
+        }
+
+        /// <summary>Opaque 64-byte DISPLAYCONFIG_MODE_INFO (only passed back to SetDisplayConfig unchanged).</summary>
+        [StructLayout(LayoutKind.Sequential, Size = 64)]
+        private struct DISPLAYCONFIG_MODE_INFO { public uint infoType; public uint id; public LUID adapterId; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct DISPLAYCONFIG_DEVICE_INFO_HEADER { public uint type; public uint size; public LUID adapterId; public uint id; }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct DISPLAYCONFIG_TARGET_DEVICE_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            public uint flags;
+            public uint outputTechnology;
+            public ushort edidManufactureId;
+            public ushort edidProductCodeId;
+            public uint connectorInstance;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string monitorFriendlyDeviceName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string monitorDevicePath;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct DISPLAYCONFIG_ADAPTER_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string adapterDevicePath;
+        }
+
+        [DllImport("user32.dll")] private static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPaths, out uint numModes);
+        [DllImport("user32.dll")]
+        private static extern int QueryDisplayConfig(uint flags, ref uint numPaths, [Out] DISPLAYCONFIG_PATH_INFO[] paths, ref uint numModes, [Out] DISPLAYCONFIG_MODE_INFO[] modes, IntPtr topologyId);
+        [DllImport("user32.dll")]
+        private static extern int SetDisplayConfig(uint numPaths, [In] DISPLAYCONFIG_PATH_INFO[] paths, uint numModes, [In] DISPLAYCONFIG_MODE_INFO[] modes, uint flags);
+        [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME req);
+        [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_DEVICE_NAME req);
+        [DllImport("user32.dll")] private static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_ADAPTER_NAME req);
+
+        private const uint QDC_ALL_PATHS = 0x1, QDC_ONLY_ACTIVE_PATHS = 0x2;
+        private const uint SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x20, SDC_APPLY = 0x80, SDC_SAVE_TO_DATABASE = 0x200, SDC_ALLOW_CHANGES = 0x400;
+        private const uint DISPLAYCONFIG_PATH_ACTIVE = 0x1, MODE_IDX_INVALID = 0xffffffff;
+        private const int ERROR_INSUFFICIENT_BUFFER = 122;
+
+        private static int Query(uint flags, out DISPLAYCONFIG_PATH_INFO[] paths, out DISPLAYCONFIG_MODE_INFO[] modes)
+        {
+            paths = new DISPLAYCONFIG_PATH_INFO[0];
+            modes = new DISPLAYCONFIG_MODE_INFO[0];
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                uint np, nm;
+                int rc = GetDisplayConfigBufferSizes(flags, out np, out nm);
+                if (rc != 0) return rc;
+                DISPLAYCONFIG_PATH_INFO[] p = new DISPLAYCONFIG_PATH_INFO[np];
+                DISPLAYCONFIG_MODE_INFO[] m = new DISPLAYCONFIG_MODE_INFO[nm];
+                rc = QueryDisplayConfig(flags, ref np, p, ref nm, m, IntPtr.Zero);
+                if (rc == ERROR_INSUFFICIENT_BUFFER) continue;
+                if (rc != 0) return rc;
+                Array.Resize(ref p, (int)np);
+                Array.Resize(ref m, (int)nm);
+                paths = p;
+                modes = m;
+                return 0;
+            }
+            return ERROR_INSUFFICIENT_BUFFER;
+        }
+
+        private static string AdapterPath(LUID adapter)
+        {
+            DISPLAYCONFIG_ADAPTER_NAME n = new DISPLAYCONFIG_ADAPTER_NAME();
+            n.header.type = 4; // DISPLAYCONFIG_DEVICE_INFO_GET_ADAPTER_NAME
+            n.header.size = (uint)Marshal.SizeOf(typeof(DISPLAYCONFIG_ADAPTER_NAME));
+            n.header.adapterId = adapter;
+            return DisplayConfigGetDeviceInfo(ref n) == 0 ? n.adapterDevicePath : null;
+        }
+
+        private static string MonitorPath(LUID adapter, uint targetId)
+        {
+            DISPLAYCONFIG_TARGET_DEVICE_NAME n = new DISPLAYCONFIG_TARGET_DEVICE_NAME();
+            n.header.type = 2; // DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME
+            n.header.size = (uint)Marshal.SizeOf(typeof(DISPLAYCONFIG_TARGET_DEVICE_NAME));
+            n.header.adapterId = adapter;
+            n.header.id = targetId;
+            return DisplayConfigGetDeviceInfo(ref n) == 0 ? n.monitorDevicePath : null;
+        }
+
+        private static string SourceGdiName(LUID adapter, uint sourceId)
+        {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME n = new DISPLAYCONFIG_SOURCE_DEVICE_NAME();
+            n.header.type = 1; // DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME
+            n.header.size = (uint)Marshal.SizeOf(typeof(DISPLAYCONFIG_SOURCE_DEVICE_NAME));
+            n.header.adapterId = adapter;
+            n.header.id = sourceId;
+            return DisplayConfigGetDeviceInfo(ref n) == 0 ? n.viewGdiDeviceName : null;
+        }
+
+        private static bool SameAdapter(LUID a, LUID b) { return a.LowPart == b.LowPart && a.HighPart == b.HighPart; }
+
+        private static bool IsVddTarget(DISPLAYCONFIG_PATH_INFO p, List<string> instanceIds, Dictionary<long, bool> cache)
+        {
+            long key = ((long)p.targetInfo.adapterId.HighPart << 32) | p.targetInfo.adapterId.LowPart;
+            bool isVdd;
+            if (!cache.TryGetValue(key, out isVdd))
+            {
+                string ap = AdapterPath(p.targetInfo.adapterId);
+                isVdd = false;
+                foreach (string id in instanceIds) if (DisplayMath.AdapterPathMatchesInstance(ap, id)) isVdd = true;
+                cache[key] = isVdd;
+            }
+            return isVdd || DisplayMath.LooksLikeVddMonitor(MonitorPath(p.targetInfo.adapterId, p.targetInfo.id));
+        }
+
+        private static string Win32Message(int rc)
+        {
+            switch (rc)
+            {
+                case 5: return "Windows změnu zobrazení odmítl (zamčená obrazovka nebo vzdálená plocha?)";
+                case 31: return "grafický ovladač změnu zobrazení nepřijal";
+                case 87: return "Windows nepřijal nastavení zobrazení";
+                case 1610: return "Windows tuto kombinaci monitorů nepodporuje";
+                default: return "chyba Windows " + rc;
+            }
+        }
+
+        // ------------------------------------------------------------ attach / detach
+
+        /// <summary>
+        /// Attaches the virtual monitor as an extended desktop to the right of the current monitors and sets
+        /// 1920 × 1080. Returns its GDI device name (\\.\DISPLAYn); throws IOException with a Czech message on failure.
+        /// attachedByUs = false when the user already had the monitor on the desktop (then it stays after sharing).
+        /// </summary>
+        public static string Attach(int width, int height, out bool attachedByUs)
+        {
+            attachedByUs = true;
+            lock (Gate)
+            {
+                List<string> ids;
+                string detail;
+                VddState st = Detect(out ids, out detail);
+                if (st != VddState.Ready) throw new IOException(char.ToUpper(detail[0]) + detail.Substring(1) + ".");
+
+                string gdi = ActiveVddGdiName(ids);
+                if (gdi == null)
+                {
+                    DISPLAYCONFIG_PATH_INFO[] all;
+                    DISPLAYCONFIG_MODE_INFO[] modes;
+                    int rc = Query(QDC_ALL_PATHS, out all, out modes);
+                    if (rc != 0) throw new IOException("Nelze načíst nastavení monitorů: " + Win32Message(rc) + ".");
+                    Dictionary<long, bool> cache = new Dictionary<long, bool>();
+                    List<DISPLAYCONFIG_PATH_INFO> active = new List<DISPLAYCONFIG_PATH_INFO>();
+                    foreach (DISPLAYCONFIG_PATH_INFO p in all) if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0) active.Add(p);
+                    if (active.Count == 0) throw new IOException("Windows nehlásí žádný aktivní monitor.");
+
+                    bool sawVdd = false, found = false;
+                    DISPLAYCONFIG_PATH_INFO pick = new DISPLAYCONFIG_PATH_INFO();
+                    foreach (DISPLAYCONFIG_PATH_INFO p in all)
+                    {
+                        if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0 || !IsVddTarget(p, ids, cache)) continue;
+                        sawVdd = true;
+                        if (p.targetInfo.targetAvailable == 0) continue;
+                        bool sourceBusy = false;
+                        foreach (DISPLAYCONFIG_PATH_INFO a in active)
+                            if (SameAdapter(a.sourceInfo.adapterId, p.sourceInfo.adapterId) && a.sourceInfo.id == p.sourceInfo.id) sourceBusy = true;
+                        if (sourceBusy) continue;
+                        pick = p;
+                        found = true;
+                        break;
+                    }
+                    if (!found)
+                    {
+                        throw new IOException(sawVdd
+                            ? "Virtual Display Driver nemá volný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1."
+                            : "Virtual Display Driver nehlásí žádný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1 a ovladač znovu načtěte.");
+                    }
+                    pick.flags = DISPLAYCONFIG_PATH_ACTIVE;
+                    pick.sourceInfo.modeInfoIdx = MODE_IDX_INVALID;
+                    pick.targetInfo.modeInfoIdx = MODE_IDX_INVALID;
+                    pick.targetInfo.statusFlags = 0;
+                    active.Add(pick);
+                    DISPLAYCONFIG_PATH_INFO[] arr = active.ToArray();
+                    rc = SetDisplayConfig((uint)arr.Length, arr, (uint)modes.Length, modes,
+                        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+                    if (rc != 0) throw new IOException("Virtuální monitor se nepodařilo připojit: " + Win32Message(rc) + ".");
+                    WriteMarker(true);
+
+                    for (int i = 0; i < 20 && gdi == null; i++)
+                    {
+                        gdi = ActiveVddGdiName(ids);
+                        if (gdi == null) Thread.Sleep(150);
+                    }
+                    if (gdi == null) throw new IOException("Virtuální monitor se připojil, ale Windows ho nezobrazil na ploše.");
+                }
+                else
+                {
+                    // already on the desktop: detach it afterwards only if Tabule Link attached it (crash leftover)
+                    attachedByUs = File.Exists(MarkerPath());
+                }
+
+                if (attachedByUs) SetModeAndPosition(gdi, width, height);
+                for (int i = 0; i < 20 && Bounds(gdi).IsEmpty; i++) Thread.Sleep(150);
+                return gdi;
+            }
+        }
+
+        /// <summary>Detaches every virtual monitor of the driver from the desktop. Returns null on success, else a Czech error.</summary>
+        public static string Detach()
+        {
+            lock (Gate)
+            {
+                try
+                {
+                    List<string> ids;
+                    string detail;
+                    Detect(out ids, out detail);
+                    DISPLAYCONFIG_PATH_INFO[] act;
+                    DISPLAYCONFIG_MODE_INFO[] modes;
+                    int rc = Query(QDC_ONLY_ACTIVE_PATHS, out act, out modes);
+                    if (rc != 0) return "Nelze načíst nastavení monitorů: " + Win32Message(rc) + ".";
+                    Dictionary<long, bool> cache = new Dictionary<long, bool>();
+                    List<DISPLAYCONFIG_PATH_INFO> keep = new List<DISPLAYCONFIG_PATH_INFO>();
+                    foreach (DISPLAYCONFIG_PATH_INFO p in act) if (!IsVddTarget(p, ids, cache)) keep.Add(p);
+                    if (keep.Count == act.Length) { WriteMarker(false); return null; }
+                    if (keep.Count == 0) return "Virtuální monitor je jediný aktivní displej, proto zůstává připojený.";
+                    DISPLAYCONFIG_PATH_INFO[] arr = keep.ToArray();
+                    rc = SetDisplayConfig((uint)arr.Length, arr, (uint)modes.Length, modes,
+                        SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
+                    if (rc != 0) return "Virtuální monitor se nepodařilo odpojit: " + Win32Message(rc) + ".";
+                    WriteMarker(false);
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    return "Virtuální monitor se nepodařilo odpojit: " + ex.Message;
+                }
+            }
+        }
+
+        /// <summary>After a crash or forced exit: detaches the monitor only if Tabule Link attached it (marker file).</summary>
+        public static void CleanupIfOurs()
+        {
+            try
+            {
+                if (File.Exists(MarkerPath())) Detach();
+            }
+            catch { }
+        }
+
+        // ------------------------------------------------------------ driver installation
+
+        /// <summary>
+        /// Folder of the winget package (portable zip with Virtual Driver Control, the signed driver and devcon.exe).
+        /// winget only unpacks it; the driver itself is installed by InstallDriverElevated.
+        /// </summary>
+        public static string FindWingetPackage()
+        {
+            try
+            {
+                string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\WinGet\Packages");
+                if (!Directory.Exists(root)) return null;
+                foreach (string dir in Directory.GetDirectories(root, WingetId + "_*"))
+                    if (File.Exists(Path.Combine(dir, @"Dependencies\devcon.exe"))) return dir;
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Installs the driver from the winget package like Virtual Driver Control does: settings to
+        /// C:\VirtualDisplayDriver, then "devcon install MttVDD.inf Root\MttVDD". Runs elevated (UAC prompt; Windows
+        /// may also ask to trust the publisher SignPath Foundation). Returns null on success, else a Czech error.
+        /// </summary>
+        public static string InstallDriverElevated(string packageDir)
+        {
+            string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", EnvironmentVariableTarget.Machine) ?? "";
+            // the package calls the x64 build "x86"
+            string driverDir = Path.Combine(packageDir, arch.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? @"SignedDrivers\ARM64\VDD" : @"SignedDrivers\x86\VDD");
+            string inf = Path.Combine(driverDir, "MttVDD.inf");
+            string devcon = Path.Combine(packageDir, @"Dependencies\devcon.exe");
+            if (!File.Exists(inf) || !File.Exists(devcon)) return "V balíčku ovladače chybí MttVDD.inf nebo devcon.exe (" + packageDir + ").";
+            string log = Path.Combine(Path.GetTempPath(), "TabuleLink-vdd-install.log");
+            try { if (File.Exists(log)) File.Delete(log); } catch { }
+            string script = BuildInstallScript(driverDir, devcon, inf, log);
+            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
+            psi.FileName = "powershell.exe";
+            psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            psi.Verb = "runas";
+            psi.UseShellExecute = true;
+            psi.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+            try
+            {
+                using (System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi))
+                {
+                    if (p != null) p.WaitForExit();
+                }
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                return ex.NativeErrorCode == 1223 ? "Instalace ovladače byla zrušena (oprávnění správce nebylo uděleno)." : "Instalaci ovladače nelze spustit: " + ex.Message;
+            }
+            string result = "";
+            try { if (File.Exists(log)) result = File.ReadAllText(log).Trim(); } catch { }
+            if (result.StartsWith("exit=0", StringComparison.Ordinal)) return null;
+            return "Instalace ovladače se nepodařila" + (result.Length > 0 ? ": " + result : ".");
+        }
+
+        /// <summary>PowerShell script run elevated by InstallDriverElevated (public for the probe/test harness).</summary>
+        public static string BuildInstallScript(string driverDir, string devcon, string inf, string log)
+        {
+            return "$ErrorActionPreference='Stop'; try { "
+                + "$t='C:\\VirtualDisplayDriver'; if (-not (Test-Path $t)) { New-Item -ItemType Directory -Path $t | Out-Null }; "
+                + "if (-not (Test-Path (Join-Path $t 'vdd_settings.xml'))) { Copy-Item " + PsQuote(Path.Combine(driverDir, "vdd_settings.xml")) + " $t }; "
+                // stderr of a native command would throw under 'Stop' in Windows PowerShell 5.1
+                + "$ErrorActionPreference='Continue'; $o = & " + PsQuote(devcon) + " install " + PsQuote(inf) + " 'Root\\MttVDD' 2>&1 | Out-String; $ec = $LASTEXITCODE; "
+                + "('exit=' + $ec + ' ' + $o.Trim()) | Set-Content -Path " + PsQuote(log) + " -Encoding UTF8 "
+                + "} catch { ('ERROR ' + $_.Exception.Message) | Set-Content -Path " + PsQuote(log) + " -Encoding UTF8 }";
+        }
+
+        private static string PsQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
+
+        /// <summary>Marks the driver's monitor as managed by Tabule Link (right after installing the driver from the app).</summary>
+        public static void MarkManaged() { WriteMarker(true); }
+
+        private static string ActiveVddGdiName(List<string> ids)
+        {
+            DISPLAYCONFIG_PATH_INFO[] act;
+            DISPLAYCONFIG_MODE_INFO[] modes;
+            if (Query(QDC_ONLY_ACTIVE_PATHS, out act, out modes) != 0) return null;
+            Dictionary<long, bool> cache = new Dictionary<long, bool>();
+            foreach (DISPLAYCONFIG_PATH_INFO p in act)
+                if (IsVddTarget(p, ids, cache)) return SourceGdiName(p.sourceInfo.adapterId, p.sourceInfo.id);
+            return null;
+        }
+
+        private static string MarkerPath()
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TabuleLink");
+            return Path.Combine(dir, "virtual-monitor.attached");
+        }
+
+        private static void WriteMarker(bool on)
+        {
+            try
+            {
+                string path = MarkerPath();
+                if (on)
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    File.WriteAllText(path, DateTime.Now.ToString("s"));
+                }
+                else if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
+        // ------------------------------------------------------------ mode, position, bounds (GDI)
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct DEVMODE
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+            public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+            public uint dmFields;
+            public int dmPositionX, dmPositionY;
+            public uint dmDisplayOrientation, dmDisplayFixedOutput;
+            public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+            public ushort dmLogPixels;
+            public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+            public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int ChangeDisplaySettingsExW(string device, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr param);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int ChangeDisplaySettingsExW(string device, IntPtr dm, IntPtr hwnd, uint flags, IntPtr param);
+
+        private const int ENUM_CURRENT_SETTINGS = -1;
+        private const uint DM_POSITION = 0x20, DM_PELSWIDTH = 0x80000, DM_PELSHEIGHT = 0x100000;
+        private const uint CDS_UPDATEREGISTRY = 0x1, CDS_NORESET = 0x10000000;
+
+        private static DEVMODE NewDevMode()
+        {
+            DEVMODE dm = new DEVMODE();
+            dm.dmSize = (ushort)Marshal.SizeOf(typeof(DEVMODE));
+            return dm;
+        }
+
+        private static void SetModeAndPosition(string gdi, int width, int height)
+        {
+            List<Size> sizes = new List<Size>();
+            for (int i = 0; i < 2000; i++)
+            {
+                DEVMODE m = NewDevMode();
+                if (!EnumDisplaySettingsW(gdi, i, ref m)) break;
+                Size s = new Size((int)m.dmPelsWidth, (int)m.dmPelsHeight);
+                if (!sizes.Contains(s)) sizes.Add(s);
+            }
+            Size mode = DisplayMath.ChooseMode(sizes, width, height);
+
+            List<Rectangle> others = new List<Rectangle>();
+            foreach (MonitorEntry e in ListMonitors())
+                if (!string.Equals(e.DeviceName, gdi, StringComparison.OrdinalIgnoreCase)) others.Add(e.Bounds);
+            Point pos = DisplayMath.PlaceRightOf(others);
+
+            DEVMODE dm = NewDevMode();
+            if (!EnumDisplaySettingsW(gdi, ENUM_CURRENT_SETTINGS, ref dm)) dm = NewDevMode();
+            dm.dmFields = DM_POSITION;
+            dm.dmPositionX = pos.X;
+            dm.dmPositionY = pos.Y;
+            if (mode != Size.Empty)
+            {
+                dm.dmFields |= DM_PELSWIDTH | DM_PELSHEIGHT;
+                dm.dmPelsWidth = (uint)mode.Width;
+                dm.dmPelsHeight = (uint)mode.Height;
+            }
+            int rc = ChangeDisplaySettingsExW(gdi, ref dm, IntPtr.Zero, CDS_UPDATEREGISTRY | CDS_NORESET, IntPtr.Zero);
+            if (rc == 0) rc = ChangeDisplaySettingsExW(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
+            if (rc != 0) ChangeDisplaySettingsExW(gdi, ref dm, IntPtr.Zero, 0, IntPtr.Zero); // dynamic only, not saved
+        }
+
+        public sealed class MonitorEntry
+        {
+            public string DeviceName;
+            public Rectangle Bounds;
+            public bool Primary;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct MONITORINFOEX
+        {
+            public uint cbSize;
+            public Native.RECT rcMonitor;
+            public Native.RECT rcWork;
+            public uint dwFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
+        }
+
+        private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);
+        [DllImport("user32.dll")] private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc cb, IntPtr data);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFOEX info);
+
+        /// <summary>Monitors currently attached to the desktop (fresh, unlike the cached Screen.AllScreens).</summary>
+        public static List<MonitorEntry> ListMonitors()
+        {
+            List<MonitorEntry> list = new List<MonitorEntry>();
+            try
+            {
+                EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate(IntPtr h, IntPtr dc, IntPtr r, IntPtr d)
+                {
+                    MONITORINFOEX mi = new MONITORINFOEX();
+                    mi.cbSize = (uint)Marshal.SizeOf(typeof(MONITORINFOEX));
+                    if (GetMonitorInfoW(h, ref mi))
+                    {
+                        MonitorEntry e = new MonitorEntry();
+                        e.DeviceName = mi.szDevice;
+                        e.Bounds = Rectangle.FromLTRB(mi.rcMonitor.Left, mi.rcMonitor.Top, mi.rcMonitor.Right, mi.rcMonitor.Bottom);
+                        e.Primary = (mi.dwFlags & 1) != 0;
+                        list.Add(e);
+                    }
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Desktop bounds of an attached monitor in physical pixels, Rectangle.Empty when it isn't attached.</summary>
+        public static Rectangle Bounds(string gdiName)
+        {
+            foreach (MonitorEntry e in ListMonitors())
+                if (string.Equals(e.DeviceName, gdiName, StringComparison.OrdinalIgnoreCase)) return e.Bounds;
+            return Rectangle.Empty;
+        }
+    }
+}
