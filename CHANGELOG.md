@@ -1,6 +1,6 @@
 # Změny
 
-## Připravováno: Windows (zatím nevydáno, Android beze změny 0.7.2)
+## 0.8.0 (Windows 0.8.0 · Android beze změny 0.7.2)
 
 ### Novinky ve Windows aplikaci
 - **Vysílat jako nový monitor.** Nová volba v poli „Zdroj obrazu“. Tabule se připojí jako nový virtuální monitor, tedy rozšířená plocha 1920 × 1080 vpravo od monitorů notebooku, ne jako kopie stávajícího monitoru. Okna na ni přetáhnete a obrazovka notebooku zůstane volná.
@@ -15,7 +15,8 @@
 - Testy ffmpeg vypisují při selhání chybový výstup ffmpeg. CI se při pushi spouští jen pro `main` a značky `v*` (pull requesty mají vlastní běh), takže se kontroly na PR nespouštějí dvakrát.
 
 ### Testy
-- Nové testy: umístění nového monitoru vedle stávajících (i se zápornými souřadnicemi), výběr rozlišení, přepočet dotyků na souřadnice nového monitoru a rozpoznání ovladače podle ID hardwaru.
+- Nové testy: umístění nového monitoru vedle stávajících (i se zápornými souřadnicemi), výběr rozlišení, přepočet dotyků na souřadnice nového monitoru, rozpoznání ovladače podle ID hardwaru a značka připojeného monitoru. Windows testy: 160/160.
+- Zatím neověřeno: celé vysílání nového monitoru na skutečnou tabuli (včetně dotyků z ní) a instalace ovladače tlačítkem v aplikaci na počítači, kde ovladač ještě není.
 
 ## 0.7.2 (Android versionCode 12 · Windows beze změny 0.7.0)
 

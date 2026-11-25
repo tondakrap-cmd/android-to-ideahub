@@ -2,7 +2,9 @@
 
 Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tabletu** i z **Windows 10/11 notebooku** na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť. Funguje bez cloudu, bez služeb Google a bez proprietárního IdeaShare nebo USB donglu.
 
-> **Verze 0.7.2** (Android): nezhasínání obrazovky během vysílání, výchozí sdílení celé obrazovky, automatické skrytí aplikace po zahájení vysílání a oprava obrazu z Google Pixel. Windows zůstává ve verzi 0.7.0.
+> **Verze 0.8.0** (Windows): **vysílání jako nový virtuální monitor**. Tabule se připojí jako rozšířená plocha, na kterou přetáhnete okna, a obrazovka notebooku zůstane volná. Android zůstává ve verzi 0.7.2.
+
+> **Verze 0.7.2** (Android): nezhasínání obrazovky během vysílání, výchozí sdílení celé obrazovky, automatické skrytí aplikace po zahájení vysílání a oprava obrazu z Google Pixel.
 >
 > **Verze 0.7.0**: nový bezpečnější protokol, přepracované rozhraní na všech zařízeních, více tabulí, pauza, automatické znovupřipojení, rozdělená obrazovka, schvalování převzetí a ovládání notebooku dotykem z tabule. Podrobnosti jsou v [CHANGELOG.md](CHANGELOG.md).
 
@@ -34,7 +36,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 - Responzivní okno se **správným škálováním 125/150 %** (per-monitor DPI).
 - **Jeden seznam tabulí:** uložené i nalezené v síti, se stavem online. Nespárovanou tabuli stačí doplnit PINem.
 - **Sdílení monitoru nebo jednoho okna.** Monitor se správně určí i u notebooků se dvěma grafickými kartami.
-- **Vysílat jako nový monitor** (připravuje se v příští verzi Windows): tabule se připojí jako **rozšířená plocha 1920 × 1080** vpravo od monitorů notebooku. Okna na ni přetáhnete a obrazovka notebooku zůstane volná. Dotyky z tabule míří na nový monitor. Vyžaduje bezplatný ovladač [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT), viz [Vysílat jako nový monitor](#vysílat-jako-nový-monitor).
+- **Vysílat jako nový monitor** (od verze 0.8.0): tabule se připojí jako **rozšířená plocha 1920 × 1080** vpravo od monitorů notebooku. Okna na ni přetáhnete a obrazovka notebooku zůstane volná. Dotyky z tabule míří na nový monitor. Vyžaduje bezplatný ovladač [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT), viz [Vysílat jako nový monitor](#vysílat-jako-nový-monitor).
 - **Hardwarové kódování** (NVIDIA NVENC, Intel Quick Sync, AMD AMF) s automatickým přechodem na procesor (x264). Klíčový snímek každou sekundu, takže obraz po výpadku nezamrzne na několik sekund.
 - **Mini lišta** (Pauza · Ztlumit · Ukončit), kterou záznam obrazovky nezachytí, a **klávesové zkratky**:
   - Ctrl+Alt+S: ukončit
@@ -55,7 +57,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 2. **Naskenujte QR kód** z tabule, nebo **Najít v síti (PIN)**. Příště už stačí klepnout na **Sdílet**.
 
 ### Windows notebook
-1. Spusťte `TabuleLink-Windows-0.7.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
+1. Spusťte `TabuleLink-Windows-0.8.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
 2. Vyberte tabuli v seznamu, zadejte **PIN** z tabule a klikněte na **Spárovat a sdílet**. Příště stačí **⚡ Sdílet**.
 
 ### Vysílat jako nový monitor
