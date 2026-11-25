@@ -1,5 +1,14 @@
 # Změny
 
+## 0.7.2 (Android versionCode 12 · Windows beze změny 0.7.0)
+
+### Novinky na tabletu / telefonu (vysílající zařízení)
+- **Nezhasínat obrazovku**: přepínač v kartě „Právě vysíláte“ vedle tlačítek Pozastavit / Ztlumit / Ukončit (a také v Nastavení přenosu). Zařízení během vysílání neusne ani se nezamkne, i když je v popředí jiná aplikace. Lze přepnout i za běhu. Výchozí stav: zapnuto.
+- **Vždy sdílet celou obrazovku**: na Androidu 14 a novějším se rovnou nabídne sdílení celé obrazovky místo jedné aplikace. Po vypnutí volby nabídne Android obě možnosti. Výchozí stav: zapnuto.
+- **Po zahájení vysílání skrýt aplikaci**: Tabule Link se sám minimalizuje, jakmile tabule začne přijímat obraz. Když se připojení nepodaří, aplikace zůstane otevřená a ukáže chybu. Výchozí stav: zapnuto.
+
+Obsahuje také všechny opravy z nevydané verze 0.7.1 níže.
+
 ## 0.7.1 (Android versionCode 11 · Windows beze změny 0.7.0)
 
 ### Opravy

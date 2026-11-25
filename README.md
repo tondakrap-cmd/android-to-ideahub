@@ -2,6 +2,8 @@
 
 Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tabletu** i z **Windows 10/11 notebooku** na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť. Funguje bez cloudu, bez služeb Google a bez proprietárního IdeaShare nebo USB donglu.
 
+> **Verze 0.7.2** (Android): nezhasínání obrazovky během vysílání, výchozí sdílení celé obrazovky, automatické skrytí aplikace po zahájení vysílání a oprava obrazu z Google Pixel. Windows zůstává ve verzi 0.7.0.
+>
 > **Verze 0.7.0**: nový bezpečnější protokol, přepracované rozhraní na všech zařízeních, více tabulí, pauza, automatické znovupřipojení, rozdělená obrazovka, schvalování převzetí a ovládání notebooku dotykem z tabule. Podrobnosti jsou v [CHANGELOG.md](CHANGELOG.md).
 
 ## Hlavní funkce
@@ -89,7 +91,7 @@ python project/build.py \
   --java-home <cesta-k-JDK17> \
   --build-tools <cesta-k-SDK/build-tools/35.0.0> \
   --android-jar <cesta-k-SDK/platforms/android-35/android.jar> \
-  --output releases/Tabule-Link-0.7.0.apk
+  --output releases/Tabule-Link-0.7.2.apk
 ```
 **Podpis vydaných verzí.** Od verze 0.7.0 se všechna vydaná APK podepisují **finálním klíčem** `project/.signing/release/tabule-link-release.p12` (heslo v `password.txt` vedle, alias `tabule-link`, RSA 4096, platnost do 2126). Klíč **není v gitu** – uchovávejte jeho zálohu mimo počítač; bez něj nelze vydat aktualizaci a uživatelé by museli aplikaci odinstalovat. Otisk certifikátu (SHA-256): `96:C0:4A:5A:98:27:17:FB:C7:19:2A:75:02:49:58:49:CA:C3:52:13:D7:32:EF:16:81:25:69:55:A5:FF:DC:17`.
 
