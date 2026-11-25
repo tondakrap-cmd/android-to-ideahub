@@ -34,6 +34,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 - Responzivní okno se **správným škálováním 125/150 %** (per-monitor DPI).
 - **Jeden seznam tabulí:** uložené i nalezené v síti, se stavem online. Nespárovanou tabuli stačí doplnit PINem.
 - **Sdílení monitoru nebo jednoho okna.** Monitor se správně určí i u notebooků se dvěma grafickými kartami.
+- **Vysílat jako nový monitor** (připravuje se v příští verzi Windows): tabule se připojí jako **rozšířená plocha 1920 × 1080** vpravo od monitorů notebooku. Okna na ni přetáhnete a obrazovka notebooku zůstane volná. Dotyky z tabule míří na nový monitor. Vyžaduje bezplatný ovladač [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (MIT), viz [Vysílat jako nový monitor](#vysílat-jako-nový-monitor).
 - **Hardwarové kódování** (NVIDIA NVENC, Intel Quick Sync, AMD AMF) s automatickým přechodem na procesor (x264). Klíčový snímek každou sekundu, takže obraz po výpadku nezamrzne na několik sekund.
 - **Mini lišta** (Pauza · Ztlumit · Ukončit), kterou záznam obrazovky nezachytí, a **klávesové zkratky**:
   - Ctrl+Alt+S: ukončit
@@ -57,6 +58,19 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 1. Spusťte `TabuleLink-Windows-0.7.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
 2. Vyberte tabuli v seznamu, zadejte **PIN** z tabule a klikněte na **Spárovat a sdílet**. Příště stačí **⚡ Sdílet**.
 
+### Vysílat jako nový monitor
+V poli **Zdroj obrazu** zvolte **➕ Vysílat jako nový monitor**. Tabule pak nezobrazuje kopii stávajícího monitoru, ale novou, prázdnou plochu, na kterou přetáhnete okna (myší přes pravý okraj obrazovky notebooku nebo Win+Shift+→).
+
+- **Ovladač:** funkce používá open-source ovladač virtuálního monitoru [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) (VirtualDrivers, licence MIT, podpis SignPath Foundation). Tabule Link ho nepřibaluje. Když chybí, aplikace to oznámí a nabídne jednorázovou instalaci ve dvou krocích:
+  1. `winget install --id VirtualDrivers.Virtual-Display-Driver -e` stáhne a rozbalí podepsaný balíček (aplikace Virtual Driver Control, ovladač a `devcon.exe`) bez oprávnění správce. Samotný ovladač tím ještě nainstalovaný není.
+  2. Tabule Link pak se zvýšenými oprávněními zkopíruje nastavení do `C:\VirtualDisplayDriver` a spustí `devcon install MttVDD.inf Root\MttVDD`, stejně jako Virtual Driver Control. Windows se zeptá na oprávnění správce a může se zeptat i na důvěru vydavateli ovladače (SignPath Foundation).
+     - Balíček leží ve složce `%LOCALAPPDATA%`, do které může zapisovat i běžný uživatel. Proto se z ní nic nespouští s oprávněním správce. `devcon.exe` a soubory ovladače se nejdřív zkopírují do nové dočasné složky ve `%SystemRoot%\Temp`, kam smí jen Administrators a SYSTEM. Spustí se až po kontrole podpisů kopií: `devcon.exe` musí mít platný podpis Microsoftu a katalog ovladače podpis SignPath Foundation.
+  - Ručně lze ovladač nainstalovat i v aplikaci Virtual Driver Control (příkaz `VDD Control`). Odinstalovat ho jde ve Správci zařízení: Grafické adaptéry → Virtual Display Driver → Odinstalovat zařízení.
+- **Samotné vysílání oprávnění správce nepotřebuje.** Mimo vysílání je virtuální monitor od plochy odpojený. Při startu vysílání ho Tabule Link připojí jako rozšířenou plochu (1920 × 1080, vpravo od monitorů notebooku) a po ukončení ho zase odpojí. Pokud aplikace spadne, odpojí ho při příštím spuštění.
+- Monitor, který jste si sami připojili už dřív (např. pro jiný program), Tabule Link po vysílání neodpojí a nemění mu rozlišení ani polohu. Pokud má ovladač další volný virtuální monitor, připojí Tabule Link nový a po skončení odpojí pouze ten svůj.
+- Když ovladač nehlásí žádný monitor, nastavte v aplikaci **Virtual Driver Control** počet monitorů alespoň 1. Když je ovladač ve Správci zařízení zakázaný, aplikace nabídne otevření Správce zařízení.
+- Rozlišení virtuální plochy ve Windows je pevně 1920 × 1080 (16:9 jako tabule). Skutečné rozlišení přenášeného videa se řídí polem **Kvalita a odezva** (výchozí 1280 × 720; pro plné rozlišení 1920 × 1080 zvolte kvalitu „Ultra“). Tabule své rozlišení vysílači nehlásí.
+
 ## Kompatibilita se staršími verzemi
 - Zařízení spárovaná s verzí 0.6 **fungují dál** (sdílený klíč z 0.6 tabule stále přijímá). Odvoláte je tlačítkem **Odvolat všechna zařízení**.
 - Nová párování vyžadují verzi 0.7 na obou stranách. Klient 0.7 se k tabuli 0.6 připojí přes QR nebo ruční kód (bez nových funkcí).
@@ -72,8 +86,8 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
   - Protokol: `Protocol.cs`, `Proto2.cs`.
   - Relace: `TabuleSession.cs`.
   - Okna: `MainForm.cs`, `MiniBar.cs`, `Theme.cs`.
-  - Nativní vrstva: `Native.cs` (DXGI, SendInput, Core Audio, DPAPI).
-  - Testy: `tests/` (123 kontrol, včetně společného testovacího vektoru SPAKE2 s Javou).
+  - Virtuální monitor a nativní vrstva: `VirtualMonitor.cs`, `DisplayMath.cs`, `Native.cs` (CCD/SetupAPI, DXGI, SendInput, Core Audio, DPAPI).
+  - Testy: `tests/` (160 kontrol, včetně společného testovacího vektoru SPAKE2 s Javou).
 - `.github/workflows/ci.yml`: při každém pushi spustí testy a sestaví APK a EXE (stáhnete je v záložce *Actions → Artifacts*).
 - `releases/`: starší vydání 0.6.x a záznamy kontrol.
 
