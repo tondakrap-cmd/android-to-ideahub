@@ -57,6 +57,9 @@ namespace TabuleLinkWin
         private TabuleSession activeSession;
         private bool reallyExiting;
         private bool busy;
+        private bool refreshingSources;
+        private volatile bool installingFfmpeg;
+        private volatile bool installingDriver;
 
         // controls
         private Label statusPill, statusLabel, hotkeyHint, ffmpegLabel;
@@ -266,6 +269,7 @@ namespace TabuleLinkWin
             srcRow.Dock = DockStyle.Fill;
             srcRow.Margin = new Padding(0);
             sourceCombo = Theme.Combo();
+            sourceCombo.SelectedIndexChanged += delegate { OnSourceSelectionChanged(); };
             srcRow.Controls.Add(sourceCombo, 0, 0);
             Button refreshSrc = Theme.SecondaryButton("↻", delegate { RefreshSources(); });
             refreshSrc.Margin = new Padding(6, 0, 0, 8);
@@ -587,39 +591,68 @@ namespace TabuleLinkWin
 
         private void RefreshSources()
         {
-            object prev = sourceCombo.SelectedItem;
-            sourceCombo.Items.Clear();
-            Screen[] all = Screen.AllScreens;
-            for (int i = 0; i < all.Length; i++)
+            refreshingSources = true;
+            try
             {
-                SourceItem s = new SourceItem();
-                s.Screen = i;
-                s.Label = "🖥 Monitor " + (i + 1) + " — " + all[i].Bounds.Width + " × " + all[i].Bounds.Height + (all[i].Primary ? " (hlavní)" : "");
-                sourceCombo.Items.Add(s);
-            }
-            SourceItem v = new SourceItem();
-            v.Virtual = true;
-            v.Label = "➕ Vysílat jako nový monitor (rozšíření " + DisplayMath.VirtualWidth + " × " + DisplayMath.VirtualHeight + ")";
-            int virtualIndex = sourceCombo.Items.Add(v);
-            foreach (Native.WindowInfo w in Native.ListWindows(Handle))
-            {
-                SourceItem s = new SourceItem();
-                s.Window = w;
-                s.Label = "🗔 Okno: " + w.Label;
-                sourceCombo.Items.Add(s);
-            }
-            int sel = lastScreen == VirtualScreenSetting ? virtualIndex : Math.Min(Math.Max(0, lastScreen), all.Length - 1);
-            SourceItem p = prev as SourceItem;
-            if (p != null)
-            {
-                for (int i = 0; i < sourceCombo.Items.Count; i++)
+                object prev = sourceCombo.SelectedItem;
+                sourceCombo.Items.Clear();
+                Screen[] all = Screen.AllScreens;
+                for (int i = 0; i < all.Length; i++)
                 {
-                    SourceItem c = (SourceItem)sourceCombo.Items[i];
-                    if (p.Virtual) { if (c.Virtual) sel = i; continue; }
-                    if ((p.Window == null && c.Window == null && !c.Virtual && c.Screen == p.Screen) || (p.Window != null && c.Window != null && c.Window.Handle == p.Window.Handle)) sel = i;
+                    SourceItem s = new SourceItem();
+                    s.Screen = i;
+                    s.Label = "🖥 Monitor " + (i + 1) + " — " + all[i].Bounds.Width + " × " + all[i].Bounds.Height + (all[i].Primary ? " (hlavní)" : "");
+                    sourceCombo.Items.Add(s);
+                }
+                SourceItem v = new SourceItem();
+                v.Virtual = true;
+                v.Label = "➕ Vysílat jako nový monitor (rozšíření " + DisplayMath.VirtualWidth + " × " + DisplayMath.VirtualHeight + ")";
+                int virtualIndex = sourceCombo.Items.Add(v);
+                foreach (Native.WindowInfo w in Native.ListWindows(Handle))
+                {
+                    SourceItem s = new SourceItem();
+                    s.Window = w;
+                    s.Label = "🗔 Okno: " + w.Label;
+                    sourceCombo.Items.Add(s);
+                }
+                int sel = lastScreen == VirtualScreenSetting ? virtualIndex : Math.Min(Math.Max(0, lastScreen), all.Length - 1);
+                SourceItem p = prev as SourceItem;
+                if (p != null)
+                {
+                    for (int i = 0; i < sourceCombo.Items.Count; i++)
+                    {
+                        SourceItem c = (SourceItem)sourceCombo.Items[i];
+                        if (p.Virtual) { if (c.Virtual) sel = i; continue; }
+                        if ((p.Window == null && c.Window == null && !c.Virtual && c.Screen == p.Screen) || (p.Window != null && c.Window != null && c.Window.Handle == p.Window.Handle)) sel = i;
+                    }
+                }
+                if (sourceCombo.Items.Count > 0) sourceCombo.SelectedIndex = Math.Max(0, sel);
+            }
+            finally
+            {
+                refreshingSources = false;
+            }
+        }
+
+        private void OnSourceSelectionChanged()
+        {
+            if (refreshingSources) return;
+            SourceItem src = sourceCombo.SelectedItem as SourceItem;
+            if (src == null) return;
+            if (src.Virtual) lastScreen = VirtualScreenSetting;
+            else if (src.Window == null) lastScreen = src.Screen;
+            SaveSettings();
+
+            bool idle = (activeSession == null || !activeSession.IsRunning) && !installingDriver && !installingFfmpeg;
+            if (idle && src.Virtual)
+            {
+                QualityProfile q = QualityProfile.All[Math.Max(0, Math.Min(QualityProfile.All.Length - 1, qualityIndex))];
+                if (q.MaxSide < DisplayMath.VirtualWidth)
+                {
+                    statusLabel.Text = "Nový monitor má plochu " + DisplayMath.VirtualWidth + " × " + DisplayMath.VirtualHeight
+                        + "; přenos běží podle pole „Kvalita a odezva“ (pro plné 1920p zvolte Ultra).";
                 }
             }
-            if (sourceCombo.Items.Count > 0) sourceCombo.SelectedIndex = Math.Max(0, sel);
         }
 
         // ------------------------------------------------------------------ streaming
@@ -817,31 +850,42 @@ namespace TabuleLinkWin
 
         private void InstallFfmpegViaWinget()
         {
+            if (installingFfmpeg)
+            {
+                ShowInfo("Instalace FFmpeg už probíhá. Dokončete prosím otevřené okno terminálu.");
+                return;
+            }
             try
             {
+                installingFfmpeg = true;
                 statusLabel.Text = "Spouštím instalaci FFmpeg přes winget… Po dokončení zavřete okno terminálu.";
                 System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo();
                 psi.FileName = "cmd.exe";
                 psi.Arguments = "/c echo Instaluji FFmpeg pro Tabule Link... & winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements & echo. & echo Hotovo! Muzete toto okno zavrit. & pause";
                 psi.UseShellExecute = true;
                 System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi);
-                if (p == null) return;
+                if (p == null) { installingFfmpeg = false; return; }
                 Thread t = new Thread(delegate()
                 {
-                    try { p.WaitForExit(); } catch { }
-                    InvokeSafe(delegate
+                    try
                     {
-                        RefreshFfmpegStatus();
-                        statusLabel.Text = string.IsNullOrEmpty(TabuleSession.FindFfmpeg(customFfmpegPath))
-                            ? "Instalace skončila, ale ffmpeg.exe nebyl nalezen. Zkuste jej vybrat ručně."
-                            : "FFmpeg byl nainstalován a nalezen ✓";
-                    });
+                        try { p.WaitForExit(); } catch { }
+                        InvokeSafe(delegate
+                        {
+                            RefreshFfmpegStatus();
+                            statusLabel.Text = string.IsNullOrEmpty(TabuleSession.FindFfmpeg(customFfmpegPath))
+                                ? "Instalace skončila, ale ffmpeg.exe nebyl nalezen. Zkuste jej vybrat ručně."
+                                : "FFmpeg byl nainstalován a nalezen ✓";
+                        });
+                    }
+                    finally { installingFfmpeg = false; }
                 });
                 t.IsBackground = true;
                 t.Start();
             }
             catch (Exception ex)
             {
+                installingFfmpeg = false;
                 MessageBox.Show(this, "Nepodařilo se spustit winget: " + ex.Message + "\r\nStáhněte si ffmpeg.exe ručně a položte jej vedle TabuleLink.exe.",
                     "Instalace FFmpeg", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
@@ -852,6 +896,11 @@ namespace TabuleLinkWin
         /// <summary>True when the Virtual Display Driver is ready; otherwise explains (in Czech) and offers installation.</summary>
         private bool EnsureVirtualDisplayDriver()
         {
+            if (installingDriver)
+            {
+                ShowInfo("Instalace ovladače virtuálního monitoru už probíhá. Dokončete prosím otevřené okno instalace.");
+                return false;
+            }
             List<string> ids;
             string detail;
             VddState st = VirtualMonitor.Detect(out ids, out detail);
@@ -883,8 +932,14 @@ namespace TabuleLinkWin
 
         private void InstallVirtualDisplayDriver()
         {
+            if (installingDriver)
+            {
+                ShowInfo("Instalace ovladače virtuálního monitoru už probíhá. Dokončete prosím otevřené okno instalace.");
+                return;
+            }
             try
             {
+                installingDriver = true;
                 System.Diagnostics.Process p = null;
                 if (VirtualMonitor.FindWingetPackage() == null)
                 {
@@ -896,51 +951,59 @@ namespace TabuleLinkWin
                         + " -e --accept-source-agreements --accept-package-agreements & echo. & echo Hotovo! Zavrete toto okno, Tabule Link pak ovladac nainstaluje. & pause";
                     psi.UseShellExecute = true;
                     p = System.Diagnostics.Process.Start(psi);
-                    if (p == null) return;
+                    if (p == null) { installingDriver = false; return; }
                 }
                 Thread t = new Thread(delegate()
                 {
-                    if (p != null) { try { p.WaitForExit(); } catch { } }
-                    string error = null;
-                    string pkg = VirtualMonitor.FindWingetPackage();
-                    if (pkg == null)
+                    try
                     {
-                        error = "winget balíček ovladače nestáhl.";
-                    }
-                    else
-                    {
-                        // step 2: install the driver from the package (UAC prompt)
-                        InvokeSafe(delegate { statusLabel.Text = "Instaluji ovladač virtuálního monitoru… Potvrďte prosím oprávnění správce a důvěru vydavateli ovladače."; });
-                        error = VirtualMonitor.InstallDriverElevated(pkg);
-                    }
-                    List<string> ids;
-                    string detail = "";
-                    VddState st = VddState.Missing;
-                    for (int i = 0; i < 20; i++)
-                    {
-                        st = VirtualMonitor.Detect(out ids, out detail);
-                        if (st == VddState.Ready || error != null) break;
-                        Thread.Sleep(500);
-                    }
-                    if (st == VddState.Ready)
-                    {
-                        // the driver shows its monitor right after installation: keep it detached until sharing starts
-                        VirtualMonitor.MarkManaged();
-                        VirtualMonitor.CleanupIfOurs();
-                    }
-                    InvokeSafe(delegate
-                    {
-                        RefreshSources();
+                        if (p != null) { try { p.WaitForExit(); } catch { } }
+                        List<string> ids;
+                        string detail = "";
+                        string error = null;
+                        // Check first in case a newer winget package already registered and started the driver itself
+                        VddState st = VirtualMonitor.Detect(out ids, out detail);
+                        if (st != VddState.Ready)
+                        {
+                            string pkg = VirtualMonitor.FindWingetPackage();
+                            if (pkg == null)
+                            {
+                                error = "winget balíček ovladače nestáhl nebo má neočekávanou strukturu.";
+                            }
+                            else
+                            {
+                                // step 2: install the driver from the package (UAC prompt)
+                                InvokeSafe(delegate { statusLabel.Text = "Instaluji ovladač virtuálního monitoru… Potvrďte prosím oprávnění správce a důvěru vydavateli ovladače."; });
+                                error = VirtualMonitor.InstallDriverElevated(pkg);
+                            }
+                            for (int i = 0; i < 20; i++)
+                            {
+                                st = VirtualMonitor.Detect(out ids, out detail);
+                                if (st == VddState.Ready || error != null) break;
+                                Thread.Sleep(500);
+                            }
+                        }
                         if (st == VddState.Ready)
                         {
-                            statusLabel.Text = "Ovladač virtuálního monitoru je připraven ✓ Klikněte znovu na vysílání.";
-                            return;
+                            // the driver shows its monitor right after installation: keep it detached until sharing starts
+                            VirtualMonitor.MarkManaged();
+                            VirtualMonitor.CleanupIfOurs();
                         }
-                        statusLabel.Text = "Ovladač virtuálního monitoru není připraven.";
-                        MessageBox.Show(this, (error ?? "Instalace skončila, ale ovladač zatím není připraven (" + detail + ").")
-                            + "\r\n\r\nZkuste restartovat počítač, nebo ovladač nainstalujte ručně v aplikaci Virtual Driver Control (příkaz „VDD Control“) podle návodu na "
-                            + VirtualMonitor.ProjectUrl, "Instalace ovladače", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    });
+                        InvokeSafe(delegate
+                        {
+                            RefreshSources();
+                            if (st == VddState.Ready)
+                            {
+                                statusLabel.Text = "Ovladač virtuálního monitoru je připraven ✓ Klikněte znovu na vysílání.";
+                                return;
+                            }
+                            statusLabel.Text = "Ovladač virtuálního monitoru není připraven.";
+                            MessageBox.Show(this, (error ?? "Instalace skončila, ale ovladač zatím není připraven (" + detail + ").")
+                                + "\r\n\r\nZkuste restartovat počítač, nebo ovladač nainstalujte ručně v aplikaci Virtual Driver Control (příkaz „VDD Control“) podle návodu na "
+                                + VirtualMonitor.ProjectUrl, "Instalace ovladače", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        });
+                    }
+                    finally { installingDriver = false; }
                 });
                 t.IsBackground = true;
                 t.SetApartmentState(ApartmentState.STA); // ShellExecute (UAC "runas") expects an STA thread
@@ -948,6 +1011,7 @@ namespace TabuleLinkWin
             }
             catch (Exception ex)
             {
+                installingDriver = false;
                 MessageBox.Show(this, "Nepodařilo se spustit winget: " + ex.Message + "\r\nOvladač si můžete nainstalovat ručně podle návodu na " + VirtualMonitor.ProjectUrl,
                     "Instalace ovladače", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }

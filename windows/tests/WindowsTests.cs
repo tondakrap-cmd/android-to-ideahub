@@ -141,12 +141,21 @@ namespace TabuleLinkWin
             psi.CreateNoWindow = true;
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
+            StringBuilder stderr = new StringBuilder();
             using (Process p = Process.Start(psi))
             using (MemoryStream ms = new MemoryStream())
             {
+                p.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                {
+                    if (e.Data != null) lock (stderr) stderr.AppendLine(e.Data);
+                };
+                p.BeginErrorReadLine();
                 p.StandardOutput.BaseStream.CopyTo(ms);
-                p.WaitForExit(10000);
-                Check(p.ExitCode == 0, "ffmpeg exited cleanly");
+                bool exited = p.WaitForExit(10000);
+                if (exited) p.WaitForExit(); // flush async stderr callbacks
+                string errText;
+                lock (stderr) errText = stderr.ToString().Trim();
+                Check(exited && p.ExitCode == 0, "ffmpeg exited cleanly" + (errText.Length > 0 ? " (" + errText + ")" : ""));
                 return ms.ToArray();
             }
         }

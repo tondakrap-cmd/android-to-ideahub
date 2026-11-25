@@ -262,11 +262,11 @@ namespace TabuleLinkWin
         /// <summary>
         /// Attaches the virtual monitor as an extended desktop to the right of the current monitors and sets
         /// 1920 × 1080. Returns its GDI device name (\\.\DISPLAYn); throws IOException with a Czech message on failure.
-        /// attachedByUs = false when the user already had the monitor on the desktop (then it stays after sharing).
+        /// attachedByUs = false when no free target exists and the user already had a VDD monitor on the desktop (then it stays untouched).
         /// </summary>
         public static string Attach(int width, int height, out bool attachedByUs)
         {
-            attachedByUs = true;
+            attachedByUs = false;
             lock (Gate)
             {
                 List<string> ids;
@@ -274,39 +274,50 @@ namespace TabuleLinkWin
                 VddState st = Detect(out ids, out detail);
                 if (st != VddState.Ready) throw new IOException(char.ToUpper(detail[0]) + detail.Substring(1) + ".");
 
-                string gdi = ActiveVddGdiName(ids);
-                if (gdi == null)
+                string marker = ReadMarker();
+                if (marker != null)
                 {
-                    DISPLAYCONFIG_PATH_INFO[] all;
-                    DISPLAYCONFIG_MODE_INFO[] modes;
-                    int rc = Query(QDC_ALL_PATHS, out all, out modes);
-                    if (rc != 0) throw new IOException("Nelze načíst nastavení monitorů: " + Win32Message(rc) + ".");
-                    Dictionary<long, bool> cache = new Dictionary<long, bool>();
-                    List<DISPLAYCONFIG_PATH_INFO> active = new List<DISPLAYCONFIG_PATH_INFO>();
-                    foreach (DISPLAYCONFIG_PATH_INFO p in all) if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0) active.Add(p);
-                    if (active.Count == 0) throw new IOException("Windows nehlásí žádný aktivní monitor.");
+                    // Left over from a crashed Tabule Link session: reuse our own already-attached virtual monitor
+                    string leftoverGdi = ActiveMarkedVddGdiName(ids, marker);
+                    if (leftoverGdi != null)
+                    {
+                        attachedByUs = true;
+                        SetModeAndPosition(leftoverGdi, width, height);
+                        for (int i = 0; i < 20 && Bounds(leftoverGdi).IsEmpty; i++) Thread.Sleep(150);
+                        return leftoverGdi;
+                    }
+                    WriteMarker(null);
+                }
 
-                    bool sawVdd = false, found = false;
-                    DISPLAYCONFIG_PATH_INFO pick = new DISPLAYCONFIG_PATH_INFO();
-                    foreach (DISPLAYCONFIG_PATH_INFO p in all)
-                    {
-                        if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0 || !IsVddTarget(p, ids, cache)) continue;
-                        sawVdd = true;
-                        if (p.targetInfo.targetAvailable == 0) continue;
-                        bool sourceBusy = false;
-                        foreach (DISPLAYCONFIG_PATH_INFO a in active)
-                            if (SameAdapter(a.sourceInfo.adapterId, p.sourceInfo.adapterId) && a.sourceInfo.id == p.sourceInfo.id) sourceBusy = true;
-                        if (sourceBusy) continue;
-                        pick = p;
-                        found = true;
-                        break;
-                    }
-                    if (!found)
-                    {
-                        throw new IOException(sawVdd
-                            ? "Virtual Display Driver nemá volný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1."
-                            : "Virtual Display Driver nehlásí žádný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1 a ovladač znovu načtěte.");
-                    }
+                DISPLAYCONFIG_PATH_INFO[] all;
+                DISPLAYCONFIG_MODE_INFO[] modes;
+                int rc = Query(QDC_ALL_PATHS, out all, out modes);
+                if (rc != 0) throw new IOException("Nelze načíst nastavení monitorů: " + Win32Message(rc) + ".");
+                Dictionary<long, bool> cache = new Dictionary<long, bool>();
+                List<DISPLAYCONFIG_PATH_INFO> active = new List<DISPLAYCONFIG_PATH_INFO>();
+                foreach (DISPLAYCONFIG_PATH_INFO p in all) if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0) active.Add(p);
+                if (active.Count == 0) throw new IOException("Windows nehlásí žádný aktivní monitor.");
+
+                bool sawVdd = false, foundFree = false;
+                DISPLAYCONFIG_PATH_INFO pick = new DISPLAYCONFIG_PATH_INFO();
+                foreach (DISPLAYCONFIG_PATH_INFO p in all)
+                {
+                    if (!IsVddTarget(p, ids, cache)) continue;
+                    sawVdd = true;
+                    if ((p.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0) continue;
+                    if (p.targetInfo.targetAvailable == 0) continue;
+                    bool sourceBusy = false;
+                    foreach (DISPLAYCONFIG_PATH_INFO a in active)
+                        if (SameAdapter(a.sourceInfo.adapterId, p.sourceInfo.adapterId) && a.sourceInfo.id == p.sourceInfo.id) sourceBusy = true;
+                    if (sourceBusy) continue;
+                    pick = p;
+                    foundFree = true;
+                    break;
+                }
+
+                if (foundFree)
+                {
+                    string monPath = MonitorPath(pick.targetInfo.adapterId, pick.targetInfo.id);
                     pick.flags = DISPLAYCONFIG_PATH_ACTIVE;
                     pick.sourceInfo.modeInfoIdx = MODE_IDX_INVALID;
                     pick.targetInfo.modeInfoIdx = MODE_IDX_INVALID;
@@ -316,34 +327,53 @@ namespace TabuleLinkWin
                     rc = SetDisplayConfig((uint)arr.Length, arr, (uint)modes.Length, modes,
                         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
                     if (rc != 0) throw new IOException("Virtuální monitor se nepodařilo připojit: " + Win32Message(rc) + ".");
-                    WriteMarker(true);
+                    WriteMarker(DisplayMath.FormatManagedMarker(pick.targetInfo.id, monPath));
 
-                    for (int i = 0; i < 20 && gdi == null; i++)
+                    try
                     {
-                        gdi = ActiveVddGdiName(ids);
-                        if (gdi == null) Thread.Sleep(150);
+                        string gdi = null;
+                        for (int i = 0; i < 20 && gdi == null; i++)
+                        {
+                            gdi = ActiveTargetGdiName(pick.targetInfo.adapterId, pick.targetInfo.id);
+                            if (gdi == null) Thread.Sleep(150);
+                        }
+                        if (gdi == null) throw new IOException("Virtuální monitor se připojil, ale Windows ho nezobrazil na ploše.");
+                        attachedByUs = true;
+                        SetModeAndPosition(gdi, width, height);
+                        for (int i = 0; i < 20 && Bounds(gdi).IsEmpty; i++) Thread.Sleep(150);
+                        return gdi;
                     }
-                    if (gdi == null) throw new IOException("Virtuální monitor se připojil, ale Windows ho nezobrazil na ploše.");
-                }
-                else
-                {
-                    // already on the desktop: detach it afterwards only if Tabule Link attached it (crash leftover)
-                    attachedByUs = File.Exists(MarkerPath());
+                    catch
+                    {
+                        Detach();
+                        throw;
+                    }
                 }
 
-                if (attachedByUs) SetModeAndPosition(gdi, width, height);
-                for (int i = 0; i < 20 && Bounds(gdi).IsEmpty; i++) Thread.Sleep(150);
-                return gdi;
+                // Fallback when no free target exists (e.g. manually installed driver with 1 monitor already attached by user):
+                // share it without changing its mode/position and without detaching it afterwards.
+                string existingGdi = ActiveVddGdiName(ids);
+                if (existingGdi != null)
+                {
+                    attachedByUs = false;
+                    for (int i = 0; i < 20 && Bounds(existingGdi).IsEmpty; i++) Thread.Sleep(150);
+                    return existingGdi;
+                }
+
+                throw new IOException(sawVdd
+                    ? "Virtual Display Driver nemá volný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1."
+                    : "Virtual Display Driver nehlásí žádný monitor. V aplikaci Virtual Driver Control nastavte počet monitorů alespoň 1 a ovladač znovu načtěte.");
             }
         }
 
-        /// <summary>Detaches every virtual monitor of the driver from the desktop. Returns null on success, else a Czech error.</summary>
+        /// <summary>Detaches the virtual monitor managed by Tabule Link from the desktop. Returns null on success, else a Czech error.</summary>
         public static string Detach()
         {
             lock (Gate)
             {
                 try
                 {
+                    string marker = ReadMarker();
                     List<string> ids;
                     string detail;
                     Detect(out ids, out detail);
@@ -353,14 +383,19 @@ namespace TabuleLinkWin
                     if (rc != 0) return "Nelze načíst nastavení monitorů: " + Win32Message(rc) + ".";
                     Dictionary<long, bool> cache = new Dictionary<long, bool>();
                     List<DISPLAYCONFIG_PATH_INFO> keep = new List<DISPLAYCONFIG_PATH_INFO>();
-                    foreach (DISPLAYCONFIG_PATH_INFO p in act) if (!IsVddTarget(p, ids, cache)) keep.Add(p);
-                    if (keep.Count == act.Length) { WriteMarker(false); return null; }
+                    foreach (DISPLAYCONFIG_PATH_INFO p in act)
+                    {
+                        bool detachThis = IsVddTarget(p, ids, cache)
+                            && DisplayMath.MarkerMatchesTarget(marker ?? "*", p.targetInfo.id, MonitorPath(p.targetInfo.adapterId, p.targetInfo.id));
+                        if (!detachThis) keep.Add(p);
+                    }
+                    if (keep.Count == act.Length) { WriteMarker(null); return null; }
                     if (keep.Count == 0) return "Virtuální monitor je jediný aktivní displej, proto zůstává připojený.";
                     DISPLAYCONFIG_PATH_INFO[] arr = keep.ToArray();
                     rc = SetDisplayConfig((uint)arr.Length, arr, (uint)modes.Length, modes,
                         SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_SAVE_TO_DATABASE);
                     if (rc != 0) return "Virtuální monitor se nepodařilo odpojit: " + Win32Message(rc) + ".";
-                    WriteMarker(false);
+                    WriteMarker(null);
                     return null;
                 }
                 catch (Exception ex)
@@ -375,12 +410,58 @@ namespace TabuleLinkWin
         {
             try
             {
-                if (File.Exists(MarkerPath())) Detach();
+                if (ReadMarker() != null) Detach();
             }
             catch { }
         }
 
         // ------------------------------------------------------------ driver installation
+
+        private static string CurrentArch()
+        {
+            return Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", EnvironmentVariableTarget.Machine)
+                ?? Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE") ?? "";
+        }
+
+        private static string FindDevconPath(string packageDir)
+        {
+            if (string.IsNullOrEmpty(packageDir)) return null;
+            string preferred = Path.Combine(packageDir, @"Dependencies\devcon.exe");
+            if (File.Exists(preferred)) return preferred;
+            try
+            {
+                if (Directory.Exists(packageDir))
+                {
+                    string[] found = Directory.GetFiles(packageDir, "devcon.exe", SearchOption.AllDirectories);
+                    if (found.Length > 0) return found[0];
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string ResolveDriverDir(string packageDir, string arch)
+        {
+            if (string.IsNullOrEmpty(packageDir) || !Directory.Exists(packageDir)) return null;
+            foreach (string rel in DisplayMath.CandidateDriverSubdirs(arch))
+            {
+                string candidate = Path.Combine(packageDir, rel);
+                if (File.Exists(Path.Combine(candidate, "MttVDD.inf"))) return candidate;
+            }
+            bool wantArm64 = string.Equals(arch, "ARM64", StringComparison.OrdinalIgnoreCase);
+            try
+            {
+                foreach (string inf in Directory.GetFiles(packageDir, "MttVDD.inf", SearchOption.AllDirectories))
+                {
+                    string dir = Path.GetDirectoryName(inf);
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    bool isArmDir = dir.IndexOf("ARM64", StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (isArmDir == wantArm64) return dir;
+                }
+            }
+            catch { }
+            return null;
+        }
 
         /// <summary>
         /// Folder of the winget package (portable zip with Virtual Driver Control, the signed driver and devcon.exe).
@@ -392,8 +473,9 @@ namespace TabuleLinkWin
             {
                 string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\WinGet\Packages");
                 if (!Directory.Exists(root)) return null;
+                string arch = CurrentArch();
                 foreach (string dir in Directory.GetDirectories(root, WingetId + "_*"))
-                    if (File.Exists(Path.Combine(dir, @"Dependencies\devcon.exe"))) return dir;
+                    if (FindDevconPath(dir) != null && ResolveDriverDir(dir, arch) != null) return dir;
             }
             catch { }
             return null;
@@ -406,10 +488,9 @@ namespace TabuleLinkWin
         /// </summary>
         public static string InstallDriverElevated(string packageDir)
         {
-            string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", EnvironmentVariableTarget.Machine) ?? "";
-            // the package calls the x64 build "x86"
-            string driverDir = Path.Combine(packageDir, arch.Equals("ARM64", StringComparison.OrdinalIgnoreCase) ? @"SignedDrivers\ARM64\VDD" : @"SignedDrivers\x86\VDD");
-            if (!File.Exists(Path.Combine(driverDir, "MttVDD.inf")) || !File.Exists(Path.Combine(packageDir, @"Dependencies\devcon.exe")))
+            string driverDir = ResolveDriverDir(packageDir, CurrentArch());
+            string devcon = FindDevconPath(packageDir);
+            if (driverDir == null || devcon == null || !File.Exists(Path.Combine(driverDir, "MttVDD.inf")))
                 return "V balíčku ovladače chybí MttVDD.inf nebo devcon.exe (" + packageDir + ").";
             string log = Path.Combine(Path.GetTempPath(), "TabuleLink-vdd-install.log");
             try { if (File.Exists(log)) File.Delete(log); } catch { }
@@ -461,11 +542,12 @@ namespace TabuleLinkWin
         /// <summary>testWorkRoot != null (tests only, not elevated): work folder there, without the admin-only ACL.</summary>
         public static string BuildInstallScript(string packageDir, string driverDir, string settingsDir, string log, string testWorkRoot)
         {
+            string devconSrc = FindDevconPath(packageDir) ?? Path.Combine(packageDir, @"Dependencies\devcon.exe");
             return "$ErrorActionPreference='Stop'; $w=$null; try { "
                 + "$w = Join-Path " + (testWorkRoot == null ? "$env:SystemRoot" : PsQuote(testWorkRoot)) + " ('" + (testWorkRoot == null ? "Temp\\" : "") + "TabuleLink-vdd-' + [guid]::NewGuid().ToString('N')); "
                 + (testWorkRoot != null ? "New-Item -ItemType Directory -Path $w | Out-Null; " : AdminOnlyDirectorySnippet)
                 + "Copy-Item -Path (Join-Path " + PsQuote(driverDir) + " '*') -Destination $w; "
-                + "Copy-Item -LiteralPath " + PsQuote(Path.Combine(packageDir, @"Dependencies\devcon.exe")) + " -Destination (Join-Path $w 'devcon.exe'); "
+                + "Copy-Item -LiteralPath " + PsQuote(devconSrc) + " -Destination (Join-Path $w 'devcon.exe'); "
                 + "$d = Join-Path $w 'devcon.exe'; $s = Get-AuthenticodeSignature -FilePath $d; "
                 + "if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'devcon.exe nemá platný podpis Microsoftu' }; "
                 + "$c = Get-AuthenticodeSignature -FilePath (Join-Path $w 'mttvdd.cat'); "
@@ -485,7 +567,32 @@ namespace TabuleLinkWin
         private static string PsQuote(string s) { return "'" + s.Replace("'", "''") + "'"; }
 
         /// <summary>Marks the driver's monitor as managed by Tabule Link (right after installing the driver from the app).</summary>
-        public static void MarkManaged() { WriteMarker(true); }
+        public static void MarkManaged() { WriteMarker("*"); }
+
+        private static string ActiveTargetGdiName(LUID targetAdapter, uint targetId)
+        {
+            DISPLAYCONFIG_PATH_INFO[] act;
+            DISPLAYCONFIG_MODE_INFO[] modes;
+            if (Query(QDC_ONLY_ACTIVE_PATHS, out act, out modes) != 0) return null;
+            foreach (DISPLAYCONFIG_PATH_INFO p in act)
+                if (SameAdapter(p.targetInfo.adapterId, targetAdapter) && p.targetInfo.id == targetId)
+                    return SourceGdiName(p.sourceInfo.adapterId, p.sourceInfo.id);
+            return null;
+        }
+
+        private static string ActiveMarkedVddGdiName(List<string> ids, string marker)
+        {
+            DISPLAYCONFIG_PATH_INFO[] act;
+            DISPLAYCONFIG_MODE_INFO[] modes;
+            if (Query(QDC_ONLY_ACTIVE_PATHS, out act, out modes) != 0) return null;
+            Dictionary<long, bool> cache = new Dictionary<long, bool>();
+            foreach (DISPLAYCONFIG_PATH_INFO p in act)
+            {
+                if (IsVddTarget(p, ids, cache) && DisplayMath.MarkerMatchesTarget(marker, p.targetInfo.id, MonitorPath(p.targetInfo.adapterId, p.targetInfo.id)))
+                    return SourceGdiName(p.sourceInfo.adapterId, p.sourceInfo.id);
+            }
+            return null;
+        }
 
         private static string ActiveVddGdiName(List<string> ids)
         {
@@ -504,15 +611,27 @@ namespace TabuleLinkWin
             return Path.Combine(dir, "virtual-monitor.attached");
         }
 
-        private static void WriteMarker(bool on)
+        private static string ReadMarker()
         {
             try
             {
                 string path = MarkerPath();
-                if (on)
+                if (!File.Exists(path)) return null;
+                string content = File.ReadAllText(path, Encoding.UTF8).Trim();
+                return content.Length > 0 ? content : "*";
+            }
+            catch { return null; }
+        }
+
+        private static void WriteMarker(string content)
+        {
+            try
+            {
+                string path = MarkerPath();
+                if (!string.IsNullOrEmpty(content))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
-                    File.WriteAllText(path, DateTime.Now.ToString("s"));
+                    File.WriteAllText(path, content, Encoding.UTF8);
                 }
                 else if (File.Exists(path)) File.Delete(path);
             }

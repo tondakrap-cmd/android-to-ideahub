@@ -454,7 +454,6 @@ namespace TabuleLinkWin
                 if (cfg.VirtualMonitor)
                 {
                     Report("připojuji virtuální monitor", "Připojuji nový virtuální monitor…");
-                    virtualAttached = true; // also detach after a partial failure
                     bool ours;
                     monitorDevice = VirtualMonitor.Attach(DisplayMath.VirtualWidth, DisplayMath.VirtualHeight, out ours);
                     virtualAttached = ours;

@@ -55,6 +55,25 @@ namespace TabuleLinkWin
             Check(!DisplayMath.AdapterPathMatchesInstance(null, @"ROOT\DISPLAY\0000"), "null adapter path");
             Check(DisplayMath.LooksLikeVddMonitor(@"\\?\DISPLAY#MTT1337#1&28a6823a&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"), "VDD monitor EDID");
             Check(!DisplayMath.LooksLikeVddMonitor(@"\\?\DISPLAY#BOE0A1C#4&1e3a7d5&0&UID8388688#{e6f07b5f}"), "laptop panel is not VDD");
+
+            // targeted marker matching (prevents detaching a user-managed second VDD monitor)
+            string pathA = @"\\?\DISPLAY#MTT1337#1&28a6823a&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+            string pathB = @"\\?\DISPLAY#MTT1337#1&28a6823a&0&UID257#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
+            string marker = DisplayMath.FormatManagedMarker(256, pathA);
+            Check(DisplayMath.MarkerMatchesTarget(marker, 256, pathA), "marker matches our exact target");
+            Check(DisplayMath.MarkerMatchesTarget(marker, 999, pathA), "marker matches by device path across target ID change");
+            Check(DisplayMath.MarkerMatchesTarget(marker, 256, null), "marker falls back to target ID when path unavailable");
+            Check(!DisplayMath.MarkerMatchesTarget(marker, 257, pathB), "marker does not match another user VDD monitor");
+            Check(!DisplayMath.MarkerMatchesTarget(marker, 256, pathB), "different device path overrides coincidental target ID");
+            Check(DisplayMath.MarkerMatchesTarget("*", 257, pathB), "wildcard marker matches fresh-install VDD target");
+            Check(DisplayMath.MarkerMatchesTarget("2026-11-25T21:00:00", 256, pathA), "legacy timestamp marker still recovers crash");
+            Check(!DisplayMath.MarkerMatchesTarget(null, 256, pathA) && !DisplayMath.MarkerMatchesTarget("  ", 256, pathA), "empty marker never matches");
+
+            // winget driver subdirectory candidates (both x64 and legacy x86 folder names)
+            string[] x64Dirs = DisplayMath.CandidateDriverSubdirs("AMD64");
+            Check(Array.IndexOf(x64Dirs, @"SignedDrivers\x64\VDD") >= 0 && Array.IndexOf(x64Dirs, @"SignedDrivers\x86\VDD") >= 0, "x64 checks both x64 and x86 VDD folders");
+            string[] armDirs = DisplayMath.CandidateDriverSubdirs("ARM64");
+            Check(armDirs.Length > 0 && armDirs[0] == @"SignedDrivers\ARM64\VDD", "ARM64 prefers ARM64 VDD folder");
         }
     }
 }

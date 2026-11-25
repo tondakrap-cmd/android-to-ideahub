@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 
 namespace TabuleLinkWin
 {
@@ -103,6 +104,61 @@ namespace TabuleLinkWin
         public static bool LooksLikeVddMonitor(string monitorDevicePath)
         {
             return !string.IsNullOrEmpty(monitorDevicePath) && monitorDevicePath.IndexOf("MTT1337", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>Serializes the identity of the virtual monitor target attached by Tabule Link for crash-safe targeted detach.</summary>
+        public static string FormatManagedMarker(uint targetId, string monitorDevicePath)
+        {
+            return "target=" + targetId.ToString(CultureInfo.InvariantCulture)
+                + "\npath=" + (monitorDevicePath == null ? "" : monitorDevicePath.Trim());
+        }
+
+        /// <summary>
+        /// True when a DisplayConfig target matches our marker ("*" = any VDD target after fresh driver install,
+        /// legacy timestamp = any VDD target, otherwise exact monitor device path or target ID).
+        /// </summary>
+        public static bool MarkerMatchesTarget(string marker, uint targetId, string monitorDevicePath)
+        {
+            if (string.IsNullOrEmpty(marker)) return false;
+            string trimmed = marker.Trim();
+            if (trimmed.Length == 0) return false;
+            if (trimmed == "*") return true;
+
+            bool hasTarget = false;
+            uint savedTarget = 0;
+            string savedPath = null;
+            foreach (string rawLine in trimmed.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string line = rawLine.Trim();
+                if (line.StartsWith("target=", StringComparison.OrdinalIgnoreCase))
+                {
+                    uint parsed;
+                    if (uint.TryParse(line.Substring(7).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    {
+                        hasTarget = true;
+                        savedTarget = parsed;
+                    }
+                }
+                else if (line.StartsWith("path=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string p = line.Substring(5).Trim();
+                    if (p.Length > 0) savedPath = p;
+                }
+            }
+
+            if (!hasTarget && savedPath == null) return true; // legacy timestamp marker
+            if (savedPath != null && !string.IsNullOrEmpty(monitorDevicePath))
+                return string.Equals(savedPath, monitorDevicePath.Trim(), StringComparison.OrdinalIgnoreCase);
+            if (hasTarget) return savedTarget == targetId;
+            return false;
+        }
+
+        /// <summary>Candidate relative subdirectories for MttVDD.inf inside the WinGet package (checks both x64 and legacy x86 naming).</summary>
+        public static string[] CandidateDriverSubdirs(string processorArchitecture)
+        {
+            if (string.Equals(processorArchitecture, "ARM64", StringComparison.OrdinalIgnoreCase))
+                return new string[] { @"SignedDrivers\ARM64\VDD", @"SignedDrivers\ARM64" };
+            return new string[] { @"SignedDrivers\x64\VDD", @"SignedDrivers\x86\VDD", @"SignedDrivers\AMD64\VDD", @"SignedDrivers\VDD" };
         }
     }
 }

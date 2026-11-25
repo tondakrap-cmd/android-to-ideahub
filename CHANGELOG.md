@@ -8,7 +8,11 @@
   - Ověřeno na Windows 11 se třemi monitory: připojení v 1920 × 1080 vpravo od ostatních monitorů, zachytávání přes ddagrab i gdigrab a odpojení, to vše bez oprávnění správce.
   - Monitor se připojuje a odpojuje přes Windows API SetDisplayConfig, takže vysílání oprávnění správce nepotřebuje. Mimo vysílání je monitor odpojený. Po pádu aplikace se odpojí při jejím příštím spuštění. Monitor, který si uživatel připojil sám, zůstane beze změny.
   - Zachytávání (ddagrab podle názvu monitoru přes DXGI, záložně gdigrab) i dotykové ovládání z tabule míří na souřadnice nového monitoru. Pokud monitor během vysílání někdo odpojí, vysílání skončí se srozumitelnou zprávou.
+  - Tabule Link si pamatuje, který monitor připojil, a po vysílání nebo po pádu odpojí jen ten. Další virtuální monitory, které používáte jinde, zůstanou připojené. Když se připojení nepodaří dokončit, monitor se hned zase odpojí.
+  - Po výběru nového monitoru aplikace upozorní, že přenos se řídí polem „Kvalita a odezva“ (plné 1920 × 1080 jen při kvalitě Ultra).
+  - Instalace ovladače nejde spustit dvakrát současně a balíček ovladače se najde i při jiném pojmenování složek (x64/x86).
 - Diagnostika ukazuje u nového monitoru jeho název, rozlišení a polohu na ploše.
+- Testy ffmpeg vypisují při selhání chybový výstup ffmpeg. CI se při pushi spouští jen pro `main` a značky `v*` (pull requesty mají vlastní běh), takže se kontroly na PR nespouštějí dvakrát.
 
 ### Testy
 - Nové testy: umístění nového monitoru vedle stávajících (i se zápornými souřadnicemi), výběr rozlišení, přepočet dotyků na souřadnice nového monitoru a rozpoznání ovladače podle ID hardwaru.

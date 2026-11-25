@@ -67,9 +67,9 @@ V poli **Zdroj obrazu** zvolte **➕ Vysílat jako nový monitor**. Tabule pak n
      - Balíček leží ve složce `%LOCALAPPDATA%`, do které může zapisovat i běžný uživatel. Proto se z ní nic nespouští s oprávněním správce. `devcon.exe` a soubory ovladače se nejdřív zkopírují do nové dočasné složky ve `%SystemRoot%\Temp`, kam smí jen Administrators a SYSTEM. Spustí se až po kontrole podpisů kopií: `devcon.exe` musí mít platný podpis Microsoftu a katalog ovladače podpis SignPath Foundation.
   - Ručně lze ovladač nainstalovat i v aplikaci Virtual Driver Control (příkaz `VDD Control`). Odinstalovat ho jde ve Správci zařízení: Grafické adaptéry → Virtual Display Driver → Odinstalovat zařízení.
 - **Samotné vysílání oprávnění správce nepotřebuje.** Mimo vysílání je virtuální monitor od plochy odpojený. Při startu vysílání ho Tabule Link připojí jako rozšířenou plochu (1920 × 1080, vpravo od monitorů notebooku) a po ukončení ho zase odpojí. Pokud aplikace spadne, odpojí ho při příštím spuštění.
-- Monitor, který jste si sami připojili už dřív (např. pro jiný program), Tabule Link po vysílání neodpojí a nemění mu rozlišení ani polohu.
+- Monitor, který jste si sami připojili už dřív (např. pro jiný program), Tabule Link po vysílání neodpojí a nemění mu rozlišení ani polohu. Pokud má ovladač další volný virtuální monitor, připojí Tabule Link nový a po skončení odpojí pouze ten svůj.
 - Když ovladač nehlásí žádný monitor, nastavte v aplikaci **Virtual Driver Control** počet monitorů alespoň 1. Když je ovladač ve Správci zařízení zakázaný, aplikace nabídne otevření Správce zařízení.
-- Rozlišení je pevně 1920 × 1080 (16:9 jako tabule, odpovídá nejvyšší kvalitě „Ultra“). Tabule své rozlišení vysílači nehlásí.
+- Rozlišení virtuální plochy ve Windows je pevně 1920 × 1080 (16:9 jako tabule). Skutečné rozlišení přenášeného videa se řídí polem **Kvalita a odezva** (výchozí 1280 × 720; pro plné rozlišení 1920 × 1080 zvolte kvalitu „Ultra“). Tabule své rozlišení vysílači nehlásí.
 
 ## Kompatibilita se staršími verzemi
 - Zařízení spárovaná s verzí 0.6 **fungují dál** (sdílený klíč z 0.6 tabule stále přijímá). Odvoláte je tlačítkem **Odvolat všechna zařízení**.
@@ -86,8 +86,8 @@ V poli **Zdroj obrazu** zvolte **➕ Vysílat jako nový monitor**. Tabule pak n
   - Protokol: `Protocol.cs`, `Proto2.cs`.
   - Relace: `TabuleSession.cs`.
   - Okna: `MainForm.cs`, `MiniBar.cs`, `Theme.cs`.
-  - Nativní vrstva: `Native.cs` (DXGI, SendInput, Core Audio, DPAPI).
-  - Testy: `tests/` (123 kontrol, včetně společného testovacího vektoru SPAKE2 s Javou).
+  - Virtuální monitor a nativní vrstva: `VirtualMonitor.cs`, `DisplayMath.cs`, `Native.cs` (CCD/SetupAPI, DXGI, SendInput, Core Audio, DPAPI).
+  - Testy: `tests/` (160 kontrol, včetně společného testovacího vektoru SPAKE2 s Javou).
 - `.github/workflows/ci.yml`: při každém pushi spustí testy a sestaví APK a EXE (stáhnete je v záložce *Actions → Artifacts*).
 - `releases/`: starší vydání 0.6.x a záznamy kontrol.
 
