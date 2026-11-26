@@ -8,10 +8,17 @@ namespace TabuleLinkWin
     internal static class Program
     {
         public static string DpiMode = "-";
+        public static string UpdatedTo;         // --updated=0.9.0 (started by the update helper after replacing the EXE)
+        public static string UpdateFailedPath;  // --update-failed=<verified new EXE> (the EXE could not be replaced)
 
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
+            foreach (string a in args ?? new string[0])
+            {
+                if (a.StartsWith("--updated=", StringComparison.Ordinal) && UpdateCheck.ParseVersion(a.Substring(10)) != null) UpdatedTo = a.Substring(10);
+                else if (a.StartsWith("--update-failed=", StringComparison.Ordinal) && a.Length > 16) UpdateFailedPath = a.Substring(16);
+            }
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
             {

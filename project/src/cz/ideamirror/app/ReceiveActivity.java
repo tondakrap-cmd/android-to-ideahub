@@ -115,7 +115,7 @@ public class ReceiveActivity extends Activity implements ReceiverService.UiListe
         int tp = Ui.dp(this, 6);
         toolbar.setPadding(tp, tp, tp, tp);
         Button endBtn = Ui.dangerButton(this, "■ Ukončit prezentaci", this::confirmEndPresentation);
-        Button adminBtn = Ui.secondaryButton(this, "⚙ Správa", this::openAdmin);
+        adminBtn = Ui.secondaryButton(this, "⚙ Správa", this::openAdmin);
         Button closeBtn = Ui.secondaryButton(this, "✕ Zavřít", this::closeScreen);
         LinearLayout.LayoutParams tbLp = new LinearLayout.LayoutParams(-2, -2);
         tbLp.setMargins(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
@@ -407,6 +407,7 @@ public class ReceiveActivity extends Activity implements ReceiverService.UiListe
     }
 
     private LinearLayout devicesBox;
+    private Button adminBtn;
     private LinearLayout endpointsBox;
     private TextView diagView;
 
@@ -513,6 +514,16 @@ public class ReceiveActivity extends Activity implements ReceiverService.UiListe
         sec.addView(Ui.secondaryButton(this, st.hasAdminPin() ? "Změnit / zrušit PIN správce" : "Nastavit PIN správce (zamkne Správu)", this::editAdminPin));
 
         // Diagnostics & device
+        LinearLayout upd = card(right, "AKTUALIZACE");
+        String avail = Updater.availableVersion(this);
+        TextView updState = Ui.text(this, "Nainstalovaná verze " + Updater.currentVersion(this)
+            + (avail != null ? " · k dispozici je " + avail : ""), 14);
+        upd.addView(updState);
+        upd.addView(Ui.button(this, avail != null ? "Aktualizovat na " + avail : "Zkontrolovat aktualizace",
+            () -> { if (avail != null && Updater.pending != null) Updater.offer(this, Updater.pending); else Updater.checkInteractive(this); }), Ui.vSpace(this, 8, 4));
+        Ui.toggleRow(upd, "Automaticky kontrolovat aktualizace", "Jednou denně, jen upozornění tady ve Správě; instaluje se po potvrzení.",
+            Updater.autoCheck(this), (b, c) -> Updater.setAutoCheck(this, c));
+
         LinearLayout diag = card(right, "DIAGNOSTIKA A ZAŘÍZENÍ");
         diagView = Ui.muted(this, "", 12);
         diagView.setTextIsSelectable(true);
@@ -717,6 +728,13 @@ public class ReceiveActivity extends Activity implements ReceiverService.UiListe
         super.onStart();
         main.removeCallbacks(attachRetry);
         attachRetry.run();
+        // quiet daily update check: on the board only a mark on the "Správa" button, details inside the panel
+        updateAdminBadge();
+        Updater.maybeAutoCheck(this, (found, error) -> updateAdminBadge());
+    }
+
+    private void updateAdminBadge() {
+        if (adminBtn != null) adminBtn.setText(Updater.availableVersion(this) != null ? "⚙ Správa • aktualizace" : "⚙ Správa");
     }
 
     @Override protected void onNewIntent(Intent intent) {

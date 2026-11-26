@@ -1,5 +1,22 @@
 # Změny
 
+## 0.9.0 (Android versionCode 13 · Windows 0.9.0)
+
+### Aktualizace přímo z aplikace (Android i Windows)
+- **Kontrola nové verze na GitHub Releases.** Windows: tlačítko **Aktualizace…**. Tablet: **⋮ → Zkontrolovat aktualizace**. Tabule: **⚙ Správa → Aktualizace**. Při nalezení vyšší verze aplikace ukáže, co je nového, a nabídne **Aktualizovat**. Bez kliknutí se nic neinstaluje.
+- **Automatická kontrola** nejvýš jednou denně, dá se vypnout. Na tabuli se upozornění ukáže jen na tlačítku **⚙ Správa**.
+- **Android:** APK se stáhne, ověří se velikost a SHA-256 z GitHubu, název balíčku, verze a podpisový klíč. Pak se nainstaluje přes systémový instalátor; Android jednou požádá o povolení instalace aktualizací. Tabule po aktualizaci sama znovu spustí příjem na pozadí a obrazovku příjmu.
+- **Windows:** EXE musí mít platný podpis vydavatele (`.sig`, RSA 3072, veřejný klíč zabudovaný v aplikaci) a souhlasit s SHA-256 z GitHubu. Podpis zahrnuje i číslo verze, takže starší podepsaný EXE nejde vydávat za novější verzi. Nová verze nahradí stávající soubor na stejném místě a aplikace se sama restartuje. Když složka s aplikací není zapisovatelná, uloží se nová verze do Stažených souborů.
+- Nový skript `Sign-WindowsUpdate.ps1` podepisuje EXE pro vydání a ověří podpis proti klíči v aplikaci. Postup vydání je v README.
+- Verzi 0.9.0 je potřeba nainstalovat ještě ručně, další verze už aplikace stáhne sama.
+- Zatím neověřeno: instalace aktualizace na Android zařízení (tablet i IdeaHub) a celé stažení na Windows z vydání (půjde vyzkoušet při přechodu na další verzi).
+
+### Opravy
+- Android: diagnostika a zápatí ukazovaly verzi 0.7.1 místo skutečné 0.7.2. Test teď hlídá, že se verze v `AndroidManifest.xml`, `build.gradle` a `Ui.java` shodují.
+
+### Testy
+- Android 330/330, Windows 194/194 (nově porovnání verzí, výběr souboru z vydání, odmítnutí konceptů, předběžných vydání a cizích adres, SHA-256, podpis Windows aktualizace, parser JSON).
+
 ## 0.8.0 (Windows 0.8.0 · Android beze změny 0.7.2)
 
 ### Novinky ve Windows aplikaci

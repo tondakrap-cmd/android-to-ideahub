@@ -2,7 +2,9 @@
 
 Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tabletu** i z **Windows 10/11 notebooku** na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť. Funguje bez cloudu, bez služeb Google a bez proprietárního IdeaShare nebo USB donglu.
 
-> **Verze 0.8.0** (Windows): **vysílání jako nový virtuální monitor**. Tabule se připojí jako rozšířená plocha, na kterou přetáhnete okna, a obrazovka notebooku zůstane volná. Android zůstává ve verzi 0.7.2.
+> **Verze 0.9.0** (Android i Windows): **aktualizace přímo z aplikace**. Tabule Link sám najde novou verzi na GitHubu, ověří ji a po potvrzení nainstaluje. Viz [Aktualizace aplikace](#aktualizace-aplikace).
+
+> **Verze 0.8.0** (Windows): **vysílání jako nový virtuální monitor**. Tabule se připojí jako rozšířená plocha, na kterou přetáhnete okna, a obrazovka notebooku zůstane volná.
 
 > **Verze 0.7.2** (Android): nezhasínání obrazovky během vysílání, výchozí sdílení celé obrazovky, automatické skrytí aplikace po zahájení vysílání a oprava obrazu z Google Pixel.
 >
@@ -57,7 +59,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 2. **Naskenujte QR kód** z tabule, nebo **Najít v síti (PIN)**. Příště už stačí klepnout na **Sdílet**.
 
 ### Windows notebook
-1. Spusťte `TabuleLink-Windows-0.8.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
+1. Spusťte `TabuleLink-Windows-0.9.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
 2. Vyberte tabuli v seznamu, zadejte **PIN** z tabule a klikněte na **Spárovat a sdílet**. Příště stačí **⚡ Sdílet**.
 
 ### Vysílat jako nový monitor
@@ -72,6 +74,18 @@ V poli **Zdroj obrazu** zvolte **➕ Vysílat jako nový monitor**. Tabule pak n
 - Monitor, který jste si sami připojili už dřív (např. pro jiný program), Tabule Link po vysílání neodpojí a nemění mu rozlišení ani polohu. Pokud má ovladač další volný virtuální monitor, připojí Tabule Link nový a po skončení odpojí pouze ten svůj.
 - Když ovladač nehlásí žádný monitor, nastavte v aplikaci **Virtual Driver Control** počet monitorů alespoň 1. Když je ovladač ve Správci zařízení zakázaný, aplikace nabídne otevření Správce zařízení.
 - Rozlišení virtuální plochy ve Windows je pevně 1920 × 1080 (16:9 jako tabule). Skutečné rozlišení přenášeného videa se řídí polem **Kvalita a odezva** (výchozí 1280 × 720; pro plné rozlišení 1920 × 1080 zvolte kvalitu „Ultra“). Tabule své rozlišení vysílači nehlásí.
+
+## Aktualizace aplikace
+Od verze 0.9.0 se Tabule Link umí aktualizovat sám z [GitHub Releases](https://github.com/tondakrap-cmd/android-to-ideahub/releases). **Verzi 0.9.0 je ale potřeba nainstalovat ještě ručně**, teprve další verze už aplikace stáhne sama.
+
+- **Kde:** Windows: tlačítko **Aktualizace…** dole v okně. Tablet: menu **⋮ → Zkontrolovat aktualizace**. Tabule: **⚙ Správa → Aktualizace**.
+- **Automatická kontrola:** nejvýš jednou denně, dá se vypnout (Windows: v pravém sloupci; tablet: v Nastavení přenosu; tabule: ve Správě). Kontrola jen ukáže upozornění, nainstaluje se až po kliknutí na **Aktualizovat**. Na tabuli se upozornění objeví jen na tlačítku **⚙ Správa**.
+- **Ověření:** stahuje se jen ze stránky vydání tohoto repozitáře přes HTTPS a kontroluje se velikost a SHA-256, který k souboru uvádí GitHub.
+  - **Android:** systém nainstaluje aktualizaci jen tehdy, když je podepsaná stejným klíčem jako nainstalovaná aplikace. Tabule Link to ověří už předem, stejně jako název balíčku a číslo verze. Při první aktualizaci Android jednou požádá o povolení „Instalovat neznámé aplikace“ pro Tabule Link.
+  - **Windows:** EXE musí mít platný podpis `.sig` od vydavatele (RSA 3072 / SHA-256). Podpis zahrnuje i číslo verze, takže starší EXE nejde vydávat za novější. Veřejný klíč je zabudovaný v aplikaci, takže podvržený soubor se nenainstaluje ani při napadeném GitHub účtu.
+- **Windows:** nová verze nahradí stávající soubor na stejném místě (zástupce i připnutí na hlavním panelu fungují dál) a aplikace se sama restartuje. Když do složky s aplikací nejde bez oprávnění správce zapisovat, uloží se ověřená nová verze do složky Stažené soubory. Během vysílání aktualizace nejde spustit.
+- **Tabule** po aktualizaci sama znovu spustí trvalý příjem na pozadí a otevře obrazovku příjmu.
+- **Internet:** kontrola aktualizací je jediné místo, kde se aplikace připojuje mimo místní síť (jen k `api.github.com` a `github.com`, nic dalšího se neodesílá). Bez internetu aplikace ohlásí, že aktualizaci nelze ověřit.
 
 ## Kompatibilita se staršími verzemi
 - Zařízení spárovaná s verzí 0.6 **fungují dál** (sdílený klíč z 0.6 tabule stále přijímá). Odvoláte je tlačítkem **Odvolat všechna zařízení**.
@@ -107,7 +121,7 @@ python project/build.py \
   --java-home <cesta-k-JDK17> \
   --build-tools <cesta-k-SDK/build-tools/35.0.0> \
   --android-jar <cesta-k-SDK/platforms/android-35/android.jar> \
-  --output releases/Tabule-Link-0.7.2.apk
+  --output releases/Tabule-Link-0.9.0.apk
 ```
 **Podpis vydaných verzí.** Od verze 0.7.0 se všechna vydaná APK podepisují **finálním klíčem** `project/.signing/release/tabule-link-release.p12` (heslo v `password.txt` vedle, alias `tabule-link`, RSA 4096, platnost do 2126). Klíč **není v gitu** – uchovávejte jeho zálohu mimo počítač; bez něj nelze vydat aktualizaci a uživatelé by museli aplikaci odinstalovat. Otisk certifikátu (SHA-256): `96:C0:4A:5A:98:27:17:FB:C7:19:2A:75:02:49:58:49:CA:C3:52:13:D7:32:EF:16:81:25:69:55:A5:FF:DC:17`.
 
@@ -121,6 +135,16 @@ Alternativně lze složku `project/` otevřít v Android Studiu (JDK 17, `compil
 ```powershell
 ./Build-Windows.ps1
 ```
+
+### Vydání (GitHub Release) a podpis aktualizací
+Aplikace hledá ve vydáních soubory přesně těchto jmen: `Tabule-Link-X.Y.Z.apk` (Android) a `TabuleLink-Windows-X.Y.Z.exe` + `TabuleLink-Windows-X.Y.Z.exe.sig` (Windows). Vydání nesmí být koncept ani předběžné vydání. Jedno vydání může obsahovat jen jednu platformu, aplikace prochází posledních 30 vydání.
+
+1. Zvyšte verzi: Android `versionCode` + `versionName` (v `AndroidManifest.xml`, `build.gradle`) a `Ui.VERSION`; Windows `WireConstants.Version` v `Protocol.cs`. Test `project/test.py` hlídá, že se Android verze shodují.
+2. Sestavte APK finálním klíčem (`build.py --release`) a EXE (`./Build-Windows.ps1`).
+3. Podepište EXE klíčem aktualizací: `./Sign-WindowsUpdate.ps1 -Exe releases\TabuleLink-Windows-X.Y.Z.exe`. Vznikne `…exe.sig`. Podpis zahrnuje verzi z názvu souboru; skript ji porovná s verzí v `Protocol.cs` a ověří, že podpis sedí s veřejným klíčem zabudovaným v aplikaci.
+4. Nahrajte APK, EXE i `.sig` do GitHub Release se značkou `vX.Y.Z`.
+
+**Klíč aktualizací Windows** je v `project/.signing/windows-update/tabule-link-update-key.xml` (RSA 3072, **není v gitu** – zálohujte ho spolu s klíčem k APK mimo počítač). Bez něj nelze vydat aktualizaci, kterou by nainstalované aplikace přijaly. Veřejná část je v `windows/src/UpdateCheck.cs` (`WindowsPublicKeyXml`). Nový klíč (`-NewKey`) by znamenal, že starší verze už aktualizace nepřijmou.
 
 ## Licence
 Autorský kód projektu je pod licencí **MIT** (viz [LICENSE](LICENSE)). Přibalená knihovna **ZXing Core 3.5.3** je pod licencí **Apache 2.0** (viz [project/THIRD-PARTY-NOTICES.txt](project/THIRD-PARTY-NOTICES.txt)).
