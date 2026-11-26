@@ -151,18 +151,32 @@ namespace TabuleLinkWin
             }
         }
 
-        /// <summary>RSA PKCS#1 v1.5 / SHA-256 signature (base64 text, as written by Sign-WindowsUpdate.ps1).</summary>
-        public static bool VerifySignature(byte[] data, string signatureText, string publicKeyXml)
+        /// <summary>
+        /// What the update key signs: a header with the version, then the EXE bytes. Binding the version prevents a
+        /// rollback where an older signed EXE is re-uploaded under a higher version number.
+        /// Must match Sign-WindowsUpdate.ps1: UTF-8 "TabuleLink-Windows-update v1\n" + version + "\n", then the file.
+        /// </summary>
+        public static byte[] SignedPayload(string version, byte[] exe)
+        {
+            byte[] head = Encoding.UTF8.GetBytes("TabuleLink-Windows-update v1\n" + version + "\n");
+            byte[] all = new byte[head.Length + exe.Length];
+            Buffer.BlockCopy(head, 0, all, 0, head.Length);
+            Buffer.BlockCopy(exe, 0, all, head.Length, exe.Length);
+            return all;
+        }
+
+        /// <summary>RSA PKCS#1 v1.5 / SHA-256 signature over SignedPayload (base64 text, as written by Sign-WindowsUpdate.ps1).</summary>
+        public static bool VerifySignature(byte[] exe, string version, string signatureText, string publicKeyXml)
         {
             try
             {
-                if (data == null || string.IsNullOrEmpty(signatureText) || string.IsNullOrEmpty(publicKeyXml)) return false;
+                if (exe == null || ParseVersion(version) == null || string.IsNullOrEmpty(signatureText) || string.IsNullOrEmpty(publicKeyXml)) return false;
                 byte[] sig = Convert.FromBase64String(signatureText.Trim());
                 using (RSACng rsa = new RSACng())
                 {
                     rsa.FromXmlString(publicKeyXml);
                     if (rsa.KeySize < 2048) return false;
-                    return rsa.VerifyData(data, sig, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                    return rsa.VerifyData(SignedPayload(version, exe), sig, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 }
             }
             catch
@@ -179,7 +193,8 @@ namespace TabuleLinkWin
             if (u.AssetSha256 != null && !string.Equals(Sha256Hex(exe), u.AssetSha256, StringComparison.Ordinal))
                 return "Kontrolní součet SHA-256 staženého souboru nesouhlasí.";
             if (exe[0] != (byte)'M' || exe[1] != (byte)'Z') return "Stažený soubor není program pro Windows.";
-            if (!VerifySignature(exe, signatureText, publicKeyXml)) return "Podpis aktualizace je neplatný – soubor nepochází od vydavatele Tabule Link.";
+            if (!VerifySignature(exe, u.Version, signatureText, publicKeyXml))
+                return "Podpis aktualizace je neplatný – soubor nepochází od vydavatele Tabule Link, nebo nejde o verzi " + u.Version + ".";
             return null;
         }
 

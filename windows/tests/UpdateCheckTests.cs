@@ -67,20 +67,26 @@ namespace TabuleLinkWin
             byte[] exe = new byte[4096];
             new Random(7).NextBytes(exe);
             exe[0] = (byte)'M'; exe[1] = (byte)'Z';
-            string pubXml, sig;
+            string pubXml, sig, bareSig;
             using (RSACng rsa = new RSACng(3072))
             {
                 pubXml = rsa.ToXmlString(false);
-                sig = Convert.ToBase64String(rsa.SignData(exe, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+                sig = Convert.ToBase64String(rsa.SignData(UpdateCheck.SignedPayload("1.0.0", exe), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+                bareSig = Convert.ToBase64String(rsa.SignData(exe, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
             }
-            Check(UpdateCheck.VerifySignature(exe, sig, pubXml), "valid signature accepted");
+            Check(UpdateCheck.VerifySignature(exe, "1.0.0", sig, pubXml), "valid signature accepted");
             byte[] tampered = (byte[])exe.Clone();
             tampered[2000] ^= 1;
-            Check(!UpdateCheck.VerifySignature(tampered, sig, pubXml), "tampered file rejected");
-            Check(!UpdateCheck.VerifySignature(exe, sig, UpdateCheck.WindowsPublicKeyXml), "signature by another key rejected");
-            Check(!UpdateCheck.VerifySignature(exe, "not base64!", pubXml) && !UpdateCheck.VerifySignature(exe, "", pubXml), "garbage signature rejected");
+            Check(!UpdateCheck.VerifySignature(tampered, "1.0.0", sig, pubXml), "tampered file rejected");
+            Check(!UpdateCheck.VerifySignature(exe, "1.0.0", sig, UpdateCheck.WindowsPublicKeyXml), "signature by another key rejected");
+            Check(!UpdateCheck.VerifySignature(exe, "1.0.0", "not base64!", pubXml) && !UpdateCheck.VerifySignature(exe, "1.0.0", "", pubXml), "garbage signature rejected");
+            // rollback: an old signed build re-uploaded under a higher version must not verify
+            Check(!UpdateCheck.VerifySignature(exe, "999.0.0", sig, pubXml), "signature is bound to the version (no rollback)");
+            Check(!UpdateCheck.VerifySignature(exe, "1.0.0", bareSig, pubXml), "signature over the bare EXE (no version) rejected");
+            Check(!UpdateCheck.VerifySignature(exe, "1.0", sig, pubXml), "malformed version rejected");
 
             UpdateRelease r = new UpdateRelease();
+            r.Version = "1.0.0";
             r.AssetSize = exe.Length;
             r.AssetSha256 = UpdateCheck.Sha256Hex(exe);
             Check(UpdateCheck.ValidateDownload(r, exe, sig, pubXml) == null, "download validates");
@@ -95,6 +101,8 @@ namespace TabuleLinkWin
             byte[] notExe = (byte[])exe.Clone();
             notExe[0] = (byte)'P';
             Check(UpdateCheck.ValidateDownload(r, notExe, sig, pubXml) != null, "non-PE file rejected");
+            r.Version = "999.0.0";
+            Check(UpdateCheck.ValidateDownload(r, exe, sig, pubXml) != null, "renamed old build rejected as a higher version");
 
             // the embedded production public key must be a real RSA key of at least 3072 bits
             using (RSACng prod = new RSACng())

@@ -82,7 +82,7 @@ Od verze 0.9.0 se Tabule Link umí aktualizovat sám z [GitHub Releases](https:/
 - **Automatická kontrola:** nejvýš jednou denně, dá se vypnout (Windows: v pravém sloupci; tablet: v Nastavení přenosu; tabule: ve Správě). Kontrola jen ukáže upozornění, nainstaluje se až po kliknutí na **Aktualizovat**. Na tabuli se upozornění objeví jen na tlačítku **⚙ Správa**.
 - **Ověření:** stahuje se jen ze stránky vydání tohoto repozitáře přes HTTPS a kontroluje se velikost a SHA-256, který k souboru uvádí GitHub.
   - **Android:** systém nainstaluje aktualizaci jen tehdy, když je podepsaná stejným klíčem jako nainstalovaná aplikace. Tabule Link to ověří už předem, stejně jako název balíčku a číslo verze. Při první aktualizaci Android jednou požádá o povolení „Instalovat neznámé aplikace“ pro Tabule Link.
-  - **Windows:** EXE musí mít platný podpis `.sig` od vydavatele (RSA 3072 / SHA-256). Veřejný klíč je zabudovaný v aplikaci, takže podvržený soubor se nenainstaluje ani při napadeném GitHub účtu.
+  - **Windows:** EXE musí mít platný podpis `.sig` od vydavatele (RSA 3072 / SHA-256). Podpis zahrnuje i číslo verze, takže starší EXE nejde vydávat za novější. Veřejný klíč je zabudovaný v aplikaci, takže podvržený soubor se nenainstaluje ani při napadeném GitHub účtu.
 - **Windows:** nová verze nahradí stávající soubor na stejném místě (zástupce i připnutí na hlavním panelu fungují dál) a aplikace se sama restartuje. Když do složky s aplikací nejde bez oprávnění správce zapisovat, uloží se ověřená nová verze do složky Stažené soubory. Během vysílání aktualizace nejde spustit.
 - **Tabule** po aktualizaci sama znovu spustí trvalý příjem na pozadí a otevře obrazovku příjmu.
 - **Internet:** kontrola aktualizací je jediné místo, kde se aplikace připojuje mimo místní síť (jen k `api.github.com` a `github.com`, nic dalšího se neodesílá). Bez internetu aplikace ohlásí, že aktualizaci nelze ověřit.
@@ -141,7 +141,7 @@ Aplikace hledá ve vydáních soubory přesně těchto jmen: `Tabule-Link-X.Y.Z.
 
 1. Zvyšte verzi: Android `versionCode` + `versionName` (v `AndroidManifest.xml`, `build.gradle`) a `Ui.VERSION`; Windows `WireConstants.Version` v `Protocol.cs`. Test `project/test.py` hlídá, že se Android verze shodují.
 2. Sestavte APK finálním klíčem (`build.py --release`) a EXE (`./Build-Windows.ps1`).
-3. Podepište EXE klíčem aktualizací: `./Sign-WindowsUpdate.ps1 -Exe releases\TabuleLink-Windows-X.Y.Z.exe`. Vznikne `…exe.sig` a skript ověří, že podpis sedí s veřejným klíčem zabudovaným v aplikaci.
+3. Podepište EXE klíčem aktualizací: `./Sign-WindowsUpdate.ps1 -Exe releases\TabuleLink-Windows-X.Y.Z.exe`. Vznikne `…exe.sig`. Podpis zahrnuje verzi z názvu souboru; skript ji porovná s verzí v `Protocol.cs` a ověří, že podpis sedí s veřejným klíčem zabudovaným v aplikaci.
 4. Nahrajte APK, EXE i `.sig` do GitHub Release se značkou `vX.Y.Z`.
 
 **Klíč aktualizací Windows** je v `project/.signing/windows-update/tabule-link-update-key.xml` (RSA 3072, **není v gitu** – zálohujte ho spolu s klíčem k APK mimo počítač). Bez něj nelze vydat aktualizaci, kterou by nainstalované aplikace přijaly. Veřejná část je v `windows/src/UpdateCheck.cs` (`WindowsPublicKeyXml`). Nový klíč (`-NewKey`) by znamenal, že starší verze už aktualizace nepřijmou.

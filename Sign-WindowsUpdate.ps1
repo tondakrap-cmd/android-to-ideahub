@@ -27,9 +27,23 @@ if ($NewKey) {
 if (-not $Exe) { throw 'Zadejte -Exe cesta\TabuleLink-Windows-X.Y.Z.exe' }
 if (-not (Test-Path -LiteralPath $KeyFile)) { throw "Chybí podpisový klíč aktualizací: $KeyFile" }
 $exePath = (Resolve-Path -LiteralPath $Exe).Path
+
+# Podpis je vázaný na verzi (ochrana proti podvržení starého EXE pod vyšším číslem verze):
+# podepisuje se UTF-8 hlavička "TabuleLink-Windows-update v1\n<verze>\n" a za ní obsah EXE.
+$nameMatch = [Regex]::Match((Split-Path -Leaf $exePath), '^TabuleLink-Windows-(\d+\.\d+\.\d+)\.exe$')
+if (-not $nameMatch.Success) { throw 'Soubor se musí jmenovat TabuleLink-Windows-X.Y.Z.exe (jméno určuje verzi, kterou podpis potvrzuje).' }
+$version = $nameMatch.Groups[1].Value
+$protocol = [IO.File]::ReadAllText((Join-Path $root 'windows\src\Protocol.cs'))
+$codeVersion = [Regex]::Match($protocol, 'public const string Version = "([^"]+)"').Groups[1].Value
+if ($codeVersion -ne $version) { throw "Verze v názvu souboru ($version) neodpovídá verzi v Protocol.cs ($codeVersion). Sestavte EXE znovu nebo ho přejmenujte." }
+
 $rsa = New-Object System.Security.Cryptography.RSACng
 $rsa.FromXmlString([IO.File]::ReadAllText($KeyFile))
-$bytes = [IO.File]::ReadAllBytes($exePath)
+$exeBytes = [IO.File]::ReadAllBytes($exePath)
+$head = [Text.Encoding]::UTF8.GetBytes("TabuleLink-Windows-update v1`n$version`n")
+$bytes = New-Object byte[] ($head.Length + $exeBytes.Length)
+[Array]::Copy($head, 0, $bytes, 0, $head.Length)
+[Array]::Copy($exeBytes, 0, $bytes, $head.Length, $exeBytes.Length)
 $sig = $rsa.SignData($bytes, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
 $sigPath = $exePath + '.sig'
 [IO.File]::WriteAllText($sigPath, [Convert]::ToBase64String($sig), [Text.Encoding]::ASCII)
@@ -44,4 +58,4 @@ if (-not $pubRsa.VerifyData($bytes, $sig, [Security.Cryptography.HashAlgorithmNa
     Remove-Item -LiteralPath $sigPath -Force
     throw 'Podpis nesedí s veřejným klíčem v UpdateCheck.cs – používáte jiný klíč, než se kterým byla aplikace sestavena.'
 }
-Write-Output "Podpis: $sigPath"
+Write-Output "Podpis (verze $version): $sigPath"
