@@ -168,7 +168,8 @@ namespace TabuleLinkWin
             TestRealFfmpegParsers();
             Proto2Tests.Run();
             DisplayMathTests.Run();
-            Console.WriteLine("PASS: " + checks + " Windows checks (PairCode, Discovery, PIN, WireIO, AudioUtil, FrameQueue, real ffmpeg H.264 Annex-B + AAC ADTS parsing, protocol v2: SPAKE2 vector shared with Java, hello, board store, geometry, control, virtual monitor placement/modes/touch/driver IDs)");
+            UpdateCheckTests.Run();
+            Console.WriteLine("PASS: " + checks + " Windows checks (PairCode, Discovery, PIN, WireIO, AudioUtil, FrameQueue, real ffmpeg H.264 Annex-B + AAC ADTS parsing, protocol v2: SPAKE2 vector shared with Java, hello, board store, geometry, control, virtual monitor placement/modes/touch/driver IDs, updates: versions/release choice/digest/signature)");
         }
     }
 }

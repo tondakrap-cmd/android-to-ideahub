@@ -29,7 +29,8 @@ public class MainActivity extends Activity {
     private int audioVolume = 70, lastNonZeroVolume = 70;
     private String pendingShareFp;
 
-    private LinearLayout boardsList, liveCard, advancedBox;
+    private LinearLayout boardsList, liveCard, advancedBox, updateCard;
+    private TextView updateText;
     private TextView statusPill, liveTitle, liveStatus, liveStats, volumeLabel;
     private Button pauseBtn, liveMuteBtn, muteBtn, qualityBtn, advToggle;
     private SeekBar volumeSeek;
@@ -176,6 +177,23 @@ public class MainActivity extends Activity {
         header.addView(menuBtn, mLp);
         root.addView(header, Ui.vSpace(this, 0, 14));
 
+        // Update card (only when a newer version was found)
+        updateCard = Ui.card(this, true);
+        updateCard.addView(Ui.section(this, "AKTUALIZACE"));
+        updateText = Ui.text(this, "", 16);
+        updateCard.addView(updateText);
+        LinearLayout updBtns = new LinearLayout(this);
+        updBtns.setOrientation(LinearLayout.HORIZONTAL);
+        Button updNow = Ui.button(this, "Aktualizovat", () -> { if (Updater.pending != null) Updater.offer(this, Updater.pending); else Updater.checkInteractive(this); });
+        Button updLater = Ui.secondaryButton(this, "Později", () -> updateCard.setVisibility(View.GONE));
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(-2, -2);
+        ulp.setMargins(0, 0, Ui.dp(this, 8), 0);
+        updBtns.addView(updNow, ulp);
+        updBtns.addView(updLater);
+        updateCard.addView(updBtns, Ui.vSpace(this, 10, 0));
+        updateCard.setVisibility(View.GONE);
+        root.addView(updateCard, Ui.vSpace(this, 0, 14));
+
         // Live card
         liveCard = Ui.card(this, true);
         liveCard.addView(Ui.section(this, "PRÁVĚ VYSÍLÁTE"));
@@ -256,6 +274,8 @@ public class MainActivity extends Activity {
             minimizeOnShare, (b, checked) -> { minimizeOnShare = checked; prefs().edit().putBoolean(K_MINIMIZE, checked).apply(); });
         advKeepOnSwitch = Ui.toggleRow(advancedBox, "Nezhasínat obrazovku během vysílání", "Lze přepnout i za běhu v kartě vysílání",
             keepScreenOn, (b, checked) -> setKeepScreenOn(checked));
+        Ui.toggleRow(advancedBox, "Automaticky kontrolovat aktualizace", "Jednou denně se podívá na GitHub; instaluje se jen po potvrzení",
+            Updater.autoCheck(this), (b, checked) -> Updater.setAutoCheck(this, checked));
         Ui.toggleRow(advancedBox, "Přenášet zvuk aplikací", Build.VERSION.SDK_INT >= 29 ? "YouTube, videa, prezentace (AAC stereo)" : "Vyžaduje Android 10 nebo novější",
             audioEnabled && Build.VERSION.SDK_INT >= 29, (b, checked) -> {
                 audioEnabled = checked;
@@ -304,6 +324,7 @@ public class MainActivity extends Activity {
         pm.getMenu().add(0, 2, 1, "Zkopírovat diagnostiku");
         pm.getMenu().add(0, 3, 2, "Licence");
         pm.getMenu().add(0, 4, 3, "Přepnout na roli TABULE");
+        pm.getMenu().add(0, 5, 4, "Zkontrolovat aktualizace");
         pm.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: editDeviceName(); return true;
@@ -312,6 +333,7 @@ public class MainActivity extends Activity {
                         + "\nSíť zařízení: " + Wire.formatEndpointsInline(Wire.endpoints(this)) + "\n" + ShareService.diagnostics());
                     return true;
                 case 3: showLicenses(); return true;
+                case 5: Updater.checkInteractive(this); return true;
                 case 4:
                     Ui.setRole(this, Ui.ROLE_BOARD);
                     stopService(new Intent(this, ShareService.class));
@@ -684,6 +706,20 @@ public class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle b) { super.onSaveInstanceState(b); b.putString("pending_fp", pendingShareFp); }
     @Override protected void onRestoreInstanceState(Bundle b) { super.onRestoreInstanceState(b); pendingShareFp = b.getString("pending_fp"); }
-    @Override protected void onResume() { super.onResume(); if (boardsList != null) { main.removeCallbacks(tick); main.post(tick); } }
+    @Override protected void onResume() {
+        super.onResume();
+        if (boardsList == null) return;
+        main.removeCallbacks(tick);
+        main.post(tick);
+        showUpdateCard(Updater.availableVersion(this));
+        Updater.maybeAutoCheck(this, (found, error) -> showUpdateCard(found.version));
+    }
+
+    private void showUpdateCard(String version) {
+        if (updateCard == null) return;
+        if (version == null) { updateCard.setVisibility(View.GONE); return; }
+        updateText.setText("Je k dispozici Tabule Link " + version + " (máte " + Updater.currentVersion(this) + ").");
+        updateCard.setVisibility(View.VISIBLE);
+    }
     @Override protected void onPause() { main.removeCallbacks(tick); pendingMinimize = false; super.onPause(); }
 }

@@ -48,6 +48,8 @@ namespace TabuleLinkWin
         private int audioVolume = 70, lastNonZeroVolume = 70;
         private bool muteSpeakers = false;
         private bool allowTouch = false;
+        private bool autoUpdateCheck = true;
+        private long lastUpdateCheckTicks = 0;
         private string deviceName = Environment.MachineName;
         private int lastScreen = 0;
 
@@ -64,6 +66,11 @@ namespace TabuleLinkWin
         // controls
         private Label statusPill, statusLabel, hotkeyHint, ffmpegLabel;
         private Panel ffmpegBanner;
+        private Panel updateBanner;
+        private Label updateLabel;
+        private UpdateRelease pendingUpdate;
+        private volatile bool updating;
+        private CheckBox autoUpdateCheckBox;
         private ListBox boardsList;
         private Button shareBtn, discoverBtn, codeBtn, renameBtn, removeBtn, pairBtn;
         private Panel pinPanel;
@@ -113,6 +120,7 @@ namespace TabuleLinkWin
             RefreshSources();
             RebuildBoardItems();
             RunDiscoveryAsync();
+            Shown += delegate { ShowStartupNotice(); MaybeAutoCheckForUpdates(); };
         }
 
         // ------------------------------------------------------------------ layout
@@ -183,7 +191,32 @@ namespace TabuleLinkWin
             bannerRow.Controls.Add(Theme.AccentButton("Nainstalovat FFmpeg", delegate { InstallFfmpegViaWinget(); }));
             bannerRow.Controls.Add(Theme.SecondaryButton("Vybrat ffmpeg.exe…", delegate { BrowseFfmpeg(); }));
             ffmpegBanner.Controls.Add(bannerRow);
-            root.Controls.Add(ffmpegBanner, 0, 1);
+
+            // Update banner (only when a newer version was found)
+            updateBanner = new Panel();
+            updateBanner.Dock = DockStyle.Fill;
+            updateBanner.AutoSize = true;
+            updateBanner.BackColor = Theme.CardHi;
+            updateBanner.Padding = new Padding(12, 8, 12, 0);
+            updateBanner.Margin = new Padding(0, 0, 0, 10);
+            updateBanner.Visible = false;
+            updateBanner.Paint += delegate(object s, PaintEventArgs e)
+            {
+                using (Pen pen = new Pen(Theme.CardHiStroke, 1f)) e.Graphics.DrawRectangle(pen, 0, 0, updateBanner.Width - 1, updateBanner.Height - 1);
+            };
+            FlowLayoutPanel updRow = Theme.Row();
+            updateLabel = Theme.TextLabel("", 9.5f, Theme.Text);
+            updateLabel.Margin = new Padding(0, 8, 12, 8);
+            updRow.Controls.Add(updateLabel);
+            updRow.Controls.Add(Theme.AccentButton("Aktualizovat", delegate { if (pendingUpdate != null) OfferUpdate(pendingUpdate); }));
+            updRow.Controls.Add(Theme.SecondaryButton("Později", delegate { updateBanner.Visible = false; }));
+            updateBanner.Controls.Add(updRow);
+
+            TableLayoutPanel banners = Theme.Column();
+            banners.Dock = DockStyle.Fill;
+            banners.Controls.Add(ffmpegBanner);
+            banners.Controls.Add(updateBanner);
+            root.Controls.Add(banners, 0, 1);
 
             // Body: two columns
             TableLayoutPanel body = new TableLayoutPanel();
@@ -334,6 +367,8 @@ namespace TabuleLinkWin
             right.Controls.Add(Theme.TextLabel("    (pokud by pak tabule nehrála, volbu vypněte — záleží na ovladači zvuku)", 8f, Theme.Muted));
             touchCheck = Theme.Check("Povolit ovládání notebooku dotykem z tabule", allowTouch, delegate { allowTouch = touchCheck.Checked; SaveSettings(); });
             right.Controls.Add(touchCheck);
+            autoUpdateCheckBox = Theme.Check("Automaticky kontrolovat aktualizace (1× denně)", autoUpdateCheck, delegate { autoUpdateCheck = autoUpdateCheckBox.Checked; SaveSettings(); });
+            right.Controls.Add(autoUpdateCheckBox);
 
             TableLayoutPanel nameRow = new TableLayoutPanel();
             nameRow.ColumnCount = 2;
@@ -373,6 +408,7 @@ namespace TabuleLinkWin
             miniBtn = Theme.SecondaryButton("Mini lišta", delegate { ShowMiniBar(true); });
             actions.Controls.Add(miniBtn);
             actions.Controls.Add(Theme.SecondaryButton("Zkopírovat diagnostiku", delegate { CopyDiagnostics(); }));
+            actions.Controls.Add(Theme.SecondaryButton("Aktualizace…", delegate { CheckForUpdates(true); }));
             actions.Controls.Add(Theme.SecondaryButton("Uklidit do lišty", delegate { HideToTray(); }));
             bottom.Controls.Add(actions);
             hotkeyHint = Theme.TextLabel("Zkratky: Ctrl+Alt+S ukončit · Ctrl+Alt+P pozastavit · Ctrl+Alt+M ztlumit zvuk", 8.5f, Theme.Muted);
@@ -891,6 +927,124 @@ namespace TabuleLinkWin
             }
         }
 
+        // ------------------------------------------------------------------ updates (GitHub Releases)
+
+        private void ShowStartupNotice()
+        {
+            if (Program.UpdatedTo != null)
+            {
+                // the status line is soon reused by board discovery, so also show a Windows notification
+                statusLabel.Text = "Tabule Link byl aktualizován na verzi " + Program.UpdatedTo + " ✓";
+                Balloon("Tabule Link byl aktualizován na verzi " + Program.UpdatedTo + ".", ToolTipIcon.Info);
+            }
+            if (Program.UpdateFailedPath != null)
+            {
+                MessageBox.Show(this, "Aktualizaci se nepodařilo dokončit, soubor aplikace byl zřejmě zamčený.\r\n\r\n"
+                    + "Ověřená nová verze je uložena zde:\r\n" + Program.UpdateFailedPath + "\r\n\r\nMůžete ji spustit nebo jí ručně nahradit stávající soubor.",
+                    "Aktualizace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void MaybeAutoCheckForUpdates()
+        {
+            if (!autoUpdateCheck) return;
+            if (DateTime.UtcNow.Ticks - lastUpdateCheckTicks < TimeSpan.TicksPerDay) return;
+            CheckForUpdates(false);
+        }
+
+        /// <summary>manual = user clicked (shows results and errors); otherwise a quiet daily check that only shows the banner.</summary>
+        private void CheckForUpdates(bool manual)
+        {
+            if (updating) { if (manual) ShowInfo("Aktualizace už probíhá."); return; }
+            if (manual) statusLabel.Text = "Hledám novou verzi na GitHubu…";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                UpdateRelease found = null;
+                string error = null;
+                try { found = Updater.Check(); }
+                catch (Exception ex) { error = ex.Message; }
+                InvokeSafe(delegate
+                {
+                    if (error == null)
+                    {
+                        lastUpdateCheckTicks = DateTime.UtcNow.Ticks;
+                        SaveSettings();
+                    }
+                    if (found != null)
+                    {
+                        pendingUpdate = found;
+                        updateLabel.Text = "⬆ Je k dispozici Tabule Link " + found.Version + " (máte " + Updater.CurrentVersion + ").";
+                        updateBanner.Visible = true;
+                        if (manual) { statusLabel.Text = "Nalezena nová verze " + found.Version + "."; OfferUpdate(found); }
+                    }
+                    else if (manual)
+                    {
+                        statusLabel.Text = error != null ? "Aktualizace nelze ověřit." : "Máte nejnovější verzi " + Updater.CurrentVersion + " ✓";
+                        if (error != null)
+                            MessageBox.Show(this, "Nepodařilo se spojit s GitHubem: " + error + "\r\n\r\nZkontrolujte připojení k internetu. Vydání najdete i na " + UpdateCheck.ReleasesPage,
+                                "Aktualizace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        else ShowInfo("Máte nejnovější verzi Tabule Link " + Updater.CurrentVersion + ".");
+                    }
+                });
+            });
+        }
+
+        private void OfferUpdate(UpdateRelease u)
+        {
+            if (updating) return;
+            if (activeSession != null && activeSession.IsRunning) { ShowInfo("Nejdřív ukončete vysílání, pak aplikaci aktualizujte."); return; }
+            string notes = UpdateCheck.ShortNotes(u.Notes, 1200);
+            DialogResult r = MessageBox.Show(this,
+                "Je k dispozici Tabule Link " + u.Version + " (máte " + Updater.CurrentVersion + ").\r\n\r\n"
+                + (notes.Length > 0 ? notes + "\r\n\r\n" : "")
+                + "Aktualizovat teď? Aplikace se stáhne z GitHubu, ověří se její podpis a pak se sama restartuje.",
+                "Aktualizace Tabule Link", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (r == DialogResult.Yes) ApplyUpdate(u);
+        }
+
+        private void ApplyUpdate(UpdateRelease u)
+        {
+            updating = true;
+            statusLabel.Text = "Stahuji Tabule Link " + u.Version + "…";
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string exe;
+                string error = Updater.DownloadAndVerify(u, delegate(int pct) { InvokeSafe(delegate { statusLabel.Text = "Stahuji Tabule Link " + u.Version + "… " + pct + " %"; }); }, out exe);
+                InvokeSafe(delegate
+                {
+                    try
+                    {
+                        if (error != null)
+                        {
+                            statusLabel.Text = "Aktualizace se nepodařila.";
+                            MessageBox.Show(this, error, "Aktualizace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return;
+                        }
+                        if (activeSession != null && activeSession.IsRunning) { ShowInfo("Mezitím začalo vysílání. Aktualizaci spusťte znovu po jeho ukončení."); return; }
+                        string current = Application.ExecutablePath;
+                        if (!Updater.CanReplaceInPlace(current))
+                        {
+                            string saved = Updater.SaveToDownloads(exe);
+                            statusLabel.Text = "Nová verze je uložena: " + saved;
+                            MessageBox.Show(this, "Do složky s aplikací nelze zapisovat bez oprávnění správce:\r\n" + Path.GetDirectoryName(current)
+                                + "\r\n\r\nOvěřená nová verze je uložena zde:\r\n" + saved + "\r\n\r\nUkončete Tabule Link a spusťte novou verzi (nebo jí nahraďte stávající soubor).",
+                                "Aktualizace", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + saved + "\""); } catch { }
+                            return;
+                        }
+                        statusLabel.Text = "Instaluji aktualizaci a restartuji aplikaci…";
+                        Updater.StartReplaceAfterExit(exe, current, u.Version);
+                        ExitApplication();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Aktualizace se nepodařila: " + ex.Message, "Aktualizace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    finally { updating = false; }
+                });
+            });
+        }
+
         // ------------------------------------------------------------------ virtual monitor driver
 
         /// <summary>True when the Virtual Display Driver is ready; otherwise explains (in Czech) and offers installation.</summary>
@@ -1231,6 +1385,8 @@ namespace TabuleLinkWin
                     else if (k == "volume" && int.TryParse(v, out n)) { audioVolume = AudioUtil.ClampPercent(n); if (audioVolume > 0) lastNonZeroVolume = audioVolume; }
                     else if (k == "mute_speakers") muteSpeakers = v == "1";
                     else if (k == "allow_touch") allowTouch = v == "1";
+                    else if (k == "auto_update_check") autoUpdateCheck = v != "0";
+                    else if (k == "last_update_check") long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out lastUpdateCheckTicks);
                     else if (k == "device_name" && v.Length > 0) deviceName = Proto2.DeviceName(v);
                     else if (k == "screen" && int.TryParse(v, out n)) lastScreen = n;
                     else if (k == "ffmpeg" && v.Length > 0) customFfmpegPath = v;
@@ -1251,6 +1407,8 @@ namespace TabuleLinkWin
                 sb.AppendLine("volume=" + audioVolume.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("mute_speakers=" + (muteSpeakers ? "1" : "0"));
                 sb.AppendLine("allow_touch=" + (allowTouch ? "1" : "0"));
+                sb.AppendLine("auto_update_check=" + (autoUpdateCheck ? "1" : "0"));
+                sb.AppendLine("last_update_check=" + lastUpdateCheckTicks.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("device_name=" + deviceName);
                 sb.AppendLine("screen=" + lastScreen.ToString(CultureInfo.InvariantCulture));
                 if (!string.IsNullOrEmpty(customFfmpegPath)) sb.AppendLine("ffmpeg=" + customFfmpegPath);

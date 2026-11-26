@@ -27,11 +27,11 @@ jobs:
           python3 project/build.py --java-home "$JAVA_HOME" \
             --build-tools "$ANDROID_HOME/build-tools/35.0.0" \
             --android-jar "$ANDROID_HOME/platforms/android-35/android.jar" \
-            --output build/Tabule-Link-0.7.0-ci.apk
+            --output build/Tabule-Link-0.9.0-ci.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: Tabule-Link-0.7.0-android-ci
-          path: build/Tabule-Link-0.7.0-ci.apk
+          name: Tabule-Link-0.9.0-android-ci
+          path: build/Tabule-Link-0.9.0-ci.apk
 
   windows:
     name: Windows — testy a EXE
@@ -56,11 +56,11 @@ jobs:
           ./Test-Windows.ps1
       - name: Sestavení EXE
         shell: pwsh
-        run: ./Build-Windows.ps1 -OutputFile "$PWD\build\TabuleLink-Windows-0.8.0.exe"
+        run: ./Build-Windows.ps1 -OutputFile "$PWD\build\TabuleLink-Windows-0.9.0.exe"
       - name: Kouřový test (spuštění okna bez pádu)
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "$PWD\build\TabuleLink-Windows-0.8.0.exe" -PassThru
+          $p = Start-Process -FilePath "$PWD\build\TabuleLink-Windows-0.9.0.exe" -PassThru
           Start-Sleep -Seconds 8
           $p.Refresh()
           $title = $p.MainWindowTitle
@@ -70,5 +70,5 @@ jobs:
           Stop-Process -Id $p.Id -Force
       - uses: actions/upload-artifact@v4
         with:
-          name: TabuleLink-Windows-0.8.0
-          path: build/TabuleLink-Windows-0.8.0.exe
+          name: TabuleLink-Windows-0.9.0
+          path: build/TabuleLink-Windows-0.9.0.exe

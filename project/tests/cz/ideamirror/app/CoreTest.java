@@ -224,8 +224,9 @@ public class CoreTest {
         testAudioUtil();
         testDiscoveryProtocol();
         ProtoTest.runAll();
+        UpdateCheckTest.run();
 
-        System.out.println("PASS: " + checks + " checks (pairing, malformed codes, flag sanitization, framing, single-record write, heartbeat, bounds, truncation, QR roundtrip, TLS end-to-end, LAN subnet & interface ranking, low-latency frame queue, audio volume gain, LAN discovery, protocol v2: SPAKE2 PIN, per-device keys, QR token, lockout, board store, geometry, control packets)");
+        System.out.println("PASS: " + checks + " checks (pairing, malformed codes, flag sanitization, framing, single-record write, heartbeat, bounds, truncation, QR roundtrip, TLS end-to-end, LAN subnet & interface ranking, low-latency frame queue, audio volume gain, LAN discovery, protocol v2: SPAKE2 PIN, per-device keys, QR token, lockout, board store, geometry, control packets, update check: versions/release choice/digest/JSON)");
     }
 
     static void testDiscoveryProtocol() {
