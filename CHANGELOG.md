@@ -1,6 +1,6 @@
 # Změny
 
-## Připravováno: 0.9.0 (Android versionCode 13 · Windows 0.9.0, zatím nevydáno)
+## 0.9.0 (Android versionCode 13 · Windows 0.9.0)
 
 ### Aktualizace přímo z aplikace (Android i Windows)
 - **Kontrola nové verze na GitHub Releases.** Windows: tlačítko **Aktualizace…**. Tablet: **⋮ → Zkontrolovat aktualizace**. Tabule: **⚙ Správa → Aktualizace**. Při nalezení vyšší verze aplikace ukáže, co je nového, a nabídne **Aktualizovat**. Bez kliknutí se nic neinstaluje.
@@ -9,6 +9,7 @@
 - **Windows:** EXE musí mít platný podpis vydavatele (`.sig`, RSA 3072, veřejný klíč zabudovaný v aplikaci) a souhlasit s SHA-256 z GitHubu. Nová verze nahradí stávající soubor na stejném místě a aplikace se sama restartuje. Když složka s aplikací není zapisovatelná, uloží se nová verze do Stažených souborů.
 - Nový skript `Sign-WindowsUpdate.ps1` podepisuje EXE pro vydání a ověří podpis proti klíči v aplikaci. Postup vydání je v README.
 - Verzi 0.9.0 je potřeba nainstalovat ještě ručně, další verze už aplikace stáhne sama.
+- Zatím neověřeno: instalace aktualizace na Android zařízení (tablet i IdeaHub) a celé stažení na Windows z vydání (půjde vyzkoušet při přechodu na další verzi).
 
 ### Opravy
 - Android: diagnostika a zápatí ukazovaly verzi 0.7.1 místo skutečné 0.7.2. Test teď hlídá, že se verze v `AndroidManifest.xml`, `build.gradle` a `Ui.java` shodují.

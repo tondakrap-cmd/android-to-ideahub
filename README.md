@@ -2,7 +2,9 @@
 
 Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tabletu** i z **Windows 10/11 notebooku** na velký Android displej (ověřeno na **Huawei IdeaHub Pro 65**) přes místní síť. Funguje bez cloudu, bez služeb Google a bez proprietárního IdeaShare nebo USB donglu.
 
-> **Verze 0.8.0** (Windows): **vysílání jako nový virtuální monitor**. Tabule se připojí jako rozšířená plocha, na kterou přetáhnete okna, a obrazovka notebooku zůstane volná. Android zůstává ve verzi 0.7.2.
+> **Verze 0.9.0** (Android i Windows): **aktualizace přímo z aplikace**. Tabule Link sám najde novou verzi na GitHubu, ověří ji a po potvrzení nainstaluje. Viz [Aktualizace aplikace](#aktualizace-aplikace).
+
+> **Verze 0.8.0** (Windows): **vysílání jako nový virtuální monitor**. Tabule se připojí jako rozšířená plocha, na kterou přetáhnete okna, a obrazovka notebooku zůstane volná.
 
 > **Verze 0.7.2** (Android): nezhasínání obrazovky během vysílání, výchozí sdílení celé obrazovky, automatické skrytí aplikace po zahájení vysílání a oprava obrazu z Google Pixel.
 >
@@ -57,7 +59,7 @@ Lehká aplikace pro **šifrované zrcadlení obrazovky a zvuku** z **Android tab
 2. **Naskenujte QR kód** z tabule, nebo **Najít v síti (PIN)**. Příště už stačí klepnout na **Sdílet**.
 
 ### Windows notebook
-1. Spusťte `TabuleLink-Windows-0.8.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
+1. Spusťte `TabuleLink-Windows-0.9.0.exe`. Pokud chybí FFmpeg, klikněte v horním pruhu na **Nainstalovat FFmpeg**.
 2. Vyberte tabuli v seznamu, zadejte **PIN** z tabule a klikněte na **Spárovat a sdílet**. Příště stačí **⚡ Sdílet**.
 
 ### Vysílat jako nový monitor
